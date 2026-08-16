@@ -5,6 +5,7 @@ on:
   push:
     branches: [main]
     paths:
+      - 'README.md'
       - 'tamil_audiobook/**'
       - 'scripts/generate_audiobook.py'
       - 'tests/**'
