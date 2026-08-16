@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+from tamil_audiobook.engine import synthesize_audiobook
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Generate a local Tamil/English audiobook with OmniVoice MLX")
+    parser.add_argument("--text-file", type=Path, required=True)
+    parser.add_argument("--reference", type=Path, required=True)
+    parser.add_argument("--reference-text-file", type=Path, required=True)
+    parser.add_argument("--output-wav", type=Path, required=True)
+    parser.add_argument("--output-mp3", type=Path)
+    parser.add_argument("--report", type=Path)
+    parser.add_argument("--num-steps", type=int, default=20)
+    args = parser.parse_args()
+
+    text = args.text_file.read_text(encoding="utf-8")
+    reference_text = args.reference_text_file.read_text(encoding="utf-8").strip()
+    report = synthesize_audiobook(
+        text=text,
+        reference_audio=args.reference,
+        reference_text=reference_text,
+        output_wav=args.output_wav,
+        output_mp3=args.output_mp3,
+        num_steps=args.num_steps,
+        report_path=args.report,
+    )
+    print(json.dumps({
+        "status": report["status"],
+        "audio_seconds": report["audio_seconds"],
+        "generation_seconds": report["generation_seconds"],
+        "aggregate_rtf": report["aggregate_rtf"],
+        "chunks": report["chunks"],
+    }, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
