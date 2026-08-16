@@ -87,19 +87,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # The Stage-1 mixed sample was generated from public benchmark text.
-          # Recover the matching text from the Stage-1 workflow without printing it.
+          # Exact public Stage-1 mixed target used to create mixed_listening_sample.wav.
           python - <<'PY'
           from pathlib import Path
-          import json
-          verification = json.loads(Path('data/private/stage1_accepted/listening_sample_verification.json').read_text(encoding='utf-8'))
-          candidates = []
-          for key, value in verification.items():
-              if isinstance(value, str) and any('\u0b80' <= ch <= '\u0bff' for ch in value) and any(ch.isascii() and ch.isalpha() for ch in value):
-                  candidates.append(value.strip())
-          if not candidates:
-              raise SystemExit('Mixed reference transcript not present in safe verification metadata')
-          Path('data/private/stage1_accepted/mixed_reference.txt').write_text(max(candidates, key=len), encoding='utf-8')
+          text = 'வணக்கம், this is my voice. இன்று Kubernetes சரியாக வேலை செய்கிறது.'
+          Path('data/private/stage1_accepted/mixed_reference.txt').write_text(text, encoding='utf-8')
           PY
           test -s data/private/stage1_accepted/mixed_reference.txt
 
