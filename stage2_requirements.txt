@@ -1,3 +1,4 @@
+# Stage-2 OmniVoice/MLX benchmark dependencies
 mlx-audio>=0.4.3
 soundfile>=0.12,<1
 numpy>=1.26,<3
