@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Sustained Apple-Silicon benchmark for OmniVoice through MLX-Audio.
 
-This script deliberately uses only non-private text and a caller-provided synthetic
-reference. Private Stage-1 voice material belongs to the later human quality gate.
+The benchmark encodes a non-private synthetic clone reference once per session and
+reuses the resulting audio tokens for all audiobook chunks. Private Stage-1 voice
+material belongs to the later human quality gate.
 """
 from __future__ import annotations
 
@@ -71,11 +72,22 @@ def main() -> int:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
+    from mlx_audio.tts.models.omnivoice.utils import create_voice_clone_prompt
     from mlx_audio.tts.utils import load_model
 
     load_started = time.perf_counter()
     model = load_model(MODEL_ID)
     model_load_seconds = time.perf_counter() - load_started
+
+    prompt_started = time.perf_counter()
+    ref_tokens = create_voice_clone_prompt(
+        str(args.reference),
+        tokenizer=model.audio_tokenizer,
+        ref_text=args.reference_text,
+    )
+    prompt_encode_seconds = time.perf_counter() - prompt_started
+    if getattr(ref_tokens, "size", 0) == 0:
+        raise RuntimeError("OmniVoice produced empty reusable clone-reference tokens")
 
     segment_reports: list[dict[str, object]] = []
     total_audio_seconds = 0.0
@@ -87,7 +99,7 @@ def main() -> int:
             model.generate(
                 text=text,
                 language=language,
-                ref_audio=str(args.reference),
+                ref_tokens=ref_tokens,
                 ref_text=args.reference_text,
                 duration_s=args.segment_seconds,
                 num_steps=args.num_steps,
@@ -129,9 +141,11 @@ def main() -> int:
         "candidate": "OmniVoice-MLX",
         "model_id": MODEL_ID,
         "num_steps": args.num_steps,
+        "reference_conditioning": "ENCODE_ONCE_REUSE_REF_TOKENS",
         "benchmark_scope": "SYNTHETIC_REFERENCE_ZERO_SHOT_CLONING_TAMIL_ENGLISH_SEQUENTIAL",
         "private_voice_used": False,
         "model_load_seconds": round(model_load_seconds, 3),
+        "prompt_encode_seconds_one_time": round(prompt_encode_seconds, 3),
         "generation_seconds": round(generation_seconds, 3),
         "audio_seconds": round(total_audio_seconds, 3),
         "aggregate_rtf": round(aggregate_rtf, 4),
@@ -153,6 +167,7 @@ def main() -> int:
         + json.dumps(
             {
                 "num_steps": report["num_steps"],
+                "prompt_encode_seconds_one_time": report["prompt_encode_seconds_one_time"],
                 "audio_seconds": report["audio_seconds"],
                 "generation_seconds": report["generation_seconds"],
                 "aggregate_rtf": report["aggregate_rtf"],
