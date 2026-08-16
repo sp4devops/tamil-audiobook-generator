@@ -1,0 +1,23 @@
+இன்று நாம் ஒரு நீண்ட தமிழ் ஆடியோ புத்தகத்தின் முதல் பகுதியை கேட்கிறோம். கதையின் குரல் மெதுவாகவும் தெளிவாகவும் தொடர வேண்டும்.
+
+அடுத்த பகுதியில் ஒரே பேச்சாளரின் குரல் மாறாமல் இருக்க வேண்டும். நீண்ட நேரம் கேட்டாலும் குரலின் தன்மை நிலையாக இருக்க வேண்டும்.
+
+This section checks whether the same cloned narrator can continue naturally in English without changing the speaker identity or pacing.
+
+இப்போது மீண்டும் தமிழ் பகுதிக்கு திரும்புகிறோம். மொழி மாறினாலும் குரல் ஒரே மனிதருடையதாகவே கேட்க வேண்டும்.
+
+இந்த audiobook engine ஒவ்வொரு பகுதியையும் சிறிய chunks ஆக உருவாக்கி பின்னர் மென்மையாக இணைக்கிறது. The transition should remain natural and consistent.
+
+கதை தொடர்ந்து செல்லும் போது ஒவ்வொரு வாக்கியத்திலும் உச்சரிப்பு தெளிவாக இருக்க வேண்டும். இடைவெளிகளும் இயல்பாக இருக்க வேண்டும்.
+
+The next English passage is intentionally short and calm so that bilingual narration remains easy to compare during quality checks.
+
+தமிழ் வாசிப்பில் சொற்களின் ஓட்டம் இயல்பாக இருக்க வேண்டும். செயற்கையான வேகம் அல்லது திடீர் குரல் மாற்றம் இருக்கக் கூடாது.
+
+இப்போது narration மீண்டும் mixed language-க்கு செல்கிறது. The same voice should continue naturally without a noticeable speaker switch.
+
+நீண்ட audio book உருவாக்கும்போது memory usage கட்டுப்பாட்டில் இருக்க வேண்டும். வேகம் அதிகமாக இருந்தாலும் quality குறையக் கூடாது.
+
+This final English section verifies that the engine can finish a multilingual sequence and still preserve the same cloned narrator.
+
+முடிவாக, ஒரு நிமிட audio இரண்டு நிமிடங்களுக்குள் உருவாக வேண்டும். அதே நேரத்தில் நாம் ஏற்றுக்கொண்ட voice quality பாதுகாக்கப்பட வேண்டும்.
