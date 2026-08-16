@@ -15,6 +15,7 @@ Build a lightweight audiobook engine for Apple Silicon that preserves the accept
 - Minimum sustained speed: **1 minute of finished audio in no more than 2 minutes** (`RTF <= 2.0`).
 - Runtime memory ceiling for Stage 2 experiments: **3 GiB RSS** unless explicitly revised.
 - Stage-1 voice is the quality baseline; Stage-2 speed work must not modify the completed Stage-1 repository.
+- The **human quality gate** remains authoritative: no engine is accepted solely from automated metrics or speed.
 
 ## Candidate A: OmniVoice on MLX
 
