@@ -59,7 +59,7 @@ def main() -> int:
     parser.add_argument("--reference-text", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--segment-seconds", type=float, default=5.0)
-    parser.add_argument("--num-steps", type=int, default=32)
+    parser.add_argument("--num-steps", type=int, default=20)
     args = parser.parse_args()
 
     if not args.reference.is_file():
@@ -128,6 +128,7 @@ def main() -> int:
     report = {
         "candidate": "OmniVoice-MLX",
         "model_id": MODEL_ID,
+        "num_steps": args.num_steps,
         "benchmark_scope": "SYNTHETIC_REFERENCE_ZERO_SHOT_CLONING_TAMIL_ENGLISH_SEQUENTIAL",
         "private_voice_used": False,
         "model_load_seconds": round(model_load_seconds, 3),
@@ -151,6 +152,7 @@ def main() -> int:
         "stage2_runtime="
         + json.dumps(
             {
+                "num_steps": report["num_steps"],
                 "audio_seconds": report["audio_seconds"],
                 "generation_seconds": report["generation_seconds"],
                 "aggregate_rtf": report["aggregate_rtf"],
