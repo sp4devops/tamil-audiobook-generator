@@ -24,6 +24,7 @@ def main() -> int:
     parser.add_argument("--output-mp3", type=Path)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--num-steps", type=int, default=20)
+    parser.add_argument("--guidance-scale", type=float, default=2.0)
     args = parser.parse_args()
 
     text = args.text_file.read_text(encoding="utf-8")
@@ -35,6 +36,7 @@ def main() -> int:
         output_wav=args.output_wav,
         output_mp3=args.output_mp3,
         num_steps=args.num_steps,
+        guidance_scale=args.guidance_scale,
         report_path=args.report,
     )
     print(json.dumps({
@@ -42,6 +44,7 @@ def main() -> int:
         "audio_seconds": report["audio_seconds"],
         "generation_seconds": report["generation_seconds"],
         "aggregate_rtf": report["aggregate_rtf"],
+        "guidance_scale": report["guidance_scale"],
         "chunks": report["chunks"],
     }, separators=(",", ":")))
     return 0
