@@ -14,6 +14,7 @@ import soundfile as sf
 
 MODEL_ID = "mlx-community/OmniVoice-bf16"
 DEFAULT_NUM_STEPS = 20
+DEFAULT_GUIDANCE_SCALE = 2.0
 DEFAULT_CROSSFADE_MS = 55
 DEFAULT_TARGET_CHARS = 140
 DEFAULT_MAX_CHARS = 220
@@ -43,7 +44,6 @@ def estimate_duration_seconds(text: str) -> float:
     words = max(1, len(text.split()))
     tamil_chars = len(_TAMIL_RE.findall(text))
     if tamil_chars:
-        # Conservative narration estimate for Tamil; clamped for OmniVoice chunking.
         seconds = words / 2.0
     else:
         seconds = words / 2.4
@@ -153,6 +153,7 @@ def synthesize_audiobook(
     output_wav: Path,
     output_mp3: Path | None = None,
     num_steps: int = DEFAULT_NUM_STEPS,
+    guidance_scale: float = DEFAULT_GUIDANCE_SCALE,
     crossfade_ms: int = DEFAULT_CROSSFADE_MS,
     target_chars: int = DEFAULT_TARGET_CHARS,
     max_chars: int = DEFAULT_MAX_CHARS,
@@ -162,6 +163,8 @@ def synthesize_audiobook(
         raise FileNotFoundError(reference_audio)
     if not reference_text.strip():
         raise ValueError("reference text is empty")
+    if guidance_scale <= 0:
+        raise ValueError("guidance_scale must be positive")
     chunks = chunk_text(text, target_chars=target_chars, max_chars=max_chars)
     if not chunks:
         raise ValueError("input text is empty")
@@ -196,6 +199,7 @@ def synthesize_audiobook(
                 ref_text=reference_text,
                 duration_s=chunk.estimated_seconds,
                 num_steps=num_steps,
+                guidance_scale=guidance_scale,
             )
         )
         elapsed = time.perf_counter() - started
@@ -240,6 +244,7 @@ def synthesize_audiobook(
         "engine": "OmniVoice-MLX",
         "model_id": MODEL_ID,
         "num_steps": num_steps,
+        "guidance_scale": guidance_scale,
         "crossfade_ms": crossfade_ms,
         "chunks": len(chunks),
         "model_load_seconds": round(model_load_seconds, 3),
