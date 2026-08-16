@@ -75,7 +75,7 @@ jobs:
           from pathlib import Path
           import re
           workflow = Path('.github/workflows/stage2-omnivoice-human-quality.yml').read_text(encoding='utf-8')
-          match = re.search(r"printf '%s' '([^']+)' .*english_reference\.txt", workflow)
+          match = re.search(r"printf\s+'%s'\s+'([^']+)'", workflow)
           if not match:
               raise SystemExit('Could not recover established transient reference text')
           Path('data/private/stage1_accepted/reference.txt').write_text(match.group(1), encoding='utf-8')
