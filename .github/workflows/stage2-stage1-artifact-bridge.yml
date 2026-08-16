@@ -1,0 +1,35 @@
+name: stage2-stage1-artifact-bridge
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/stage2-stage1-artifact-bridge.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  probe:
+    runs-on: macos-14
+    steps:
+      - name: Probe verified Stage 1 artifact access
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bridge
+          gh run download 31974866774 \
+            --repo sp4devops/tamil-voice-clone \
+            --name voice-001-stage1-apple-silicon-listening-samples \
+            --dir bridge
+          test -s bridge/english_listening_sample.wav
+          test -s bridge/listening_sample_verification.json
+          echo 'stage1_artifact_bridge=PASS'
+      - name: Remove bridged voice material
+        if: always()
+        shell: bash
+        run: rm -rf bridge
