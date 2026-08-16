@@ -27,6 +27,7 @@ OmniVoice through MLX-Audio is the current Stage-2 candidate because it combines
 - **18 steps is rejected.** Human listening rated the Tamil 18-step sample at approximately **70% voice match**, despite its better short-clip speed.
 - The accepted Stage-1 voice reference is bridged transiently from its verified GitHub Actions artifact. The reference is deleted before Stage-2 artifacts are uploaded.
 - Reusable OmniVoice clone-reference tokens are encoded once and reused across audiobook chunks.
+- The production engine now chunks long Tamil/English text, detects Tamil/English/mixed chunks, synthesizes sequentially, stitches with a **55 ms crossfade**, and exports both WAV and MP3.
 
 ### Apple Silicon performance results
 
@@ -34,21 +35,38 @@ On the standard GitHub `macos-14-arm64` runner with 7 GiB physical RAM:
 
 - Mixed Tamil/English synthetic 60-second benchmark at 20 steps: **60.0 s audio in 81.986 s**, aggregate **RTF 1.3664**, max RSS **1.223 GiB**.
 - Tamil-only sustained benchmark with the accepted Stage-1 voice at 20 steps: **60.0 s audio in 91.795 s**, aggregate **RTF 1.5299**, max RSS **1.171 GiB**, zero swaps.
-- The Tamil-only sustained benchmark therefore meets both Stage-2 hard gates: **RTF <= 2.0** and **RSS <= 3 GiB** without lowering below the human-preferred 20-step setting.
+- Production audiobook-engine acceptance run using the accepted Stage-1 voice at 20 steps: **96.6 s finished audio in 120.496 s synthesis**, aggregate **RTF 1.2474**, max RSS **1.352 GiB**, WAV and MP3 export PASS, 9 stitched chunks.
+- The production-engine result is equivalent to roughly **75 seconds of synthesis per finished minute**, comfortably inside the 120-second hard target.
 
-Relevant successful run:
+Relevant successful runs:
 
 - `stage2-omnivoice-tamil-sustained` run **31978886925** at commit `ab9579e8068f32459e9b3b0b82396caa4d0322bf`.
+- `stage2-audiobook-engine` run **31979462445** at commit `a0cde427779c2e91ec378a0443da3033b5f8a7f9`.
+
+## Production engine
+
+The reusable engine lives in `tamil_audiobook/engine.py` with CLI entry point `scripts/generate_audiobook.py`.
+
+Current production behavior:
+
+- 20-step OmniVoice MLX synthesis.
+- Clone-reference prompt encoded once per audiobook session.
+- Sentence-aware long-text chunking.
+- Tamil, English, and mixed-language mode selection per chunk.
+- 55 ms crossfade stitching between generated chunks.
+- WAV output and optional MP3 export through local FFmpeg.
+- JSON runtime report with per-chunk and aggregate RTF.
+- Unit-tested text chunking, language selection, duration bounds, and crossfade logic.
 
 ## Acceptance state
 
-The **sustained performance gate is PASS at the retained 20-step quality setting**.
+The **production performance, memory, WAV export, and MP3 export gates are PASS at the retained 20-step quality setting**.
 
-Human quality validation is still authoritative. Tamil 20-step quality is approximately 90% by user listening. English and mixed-language human acceptance should be confirmed before declaring the full bilingual Stage-2 engine complete.
+Human quality validation is still authoritative. Tamil 20-step quality is approximately 90% by user listening. The generated 96.6-second bilingual audiobook sample from run `31979462445` must be listened to before declaring the full bilingual Stage-2 engine complete.
 
 ## Benchmark design
 
-The sustained benchmark uses sequential audiobook-style chunks rather than one tiny sentence. It records:
+The sustained benchmarks use sequential audiobook-style chunks rather than one tiny sentence. They record:
 
 - model-load wall time,
 - one-time clone-reference encoding time,
