@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="midnight">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="dark light">
   <title>ListenLeaf — Local Audiobooks</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
@@ -19,84 +19,35 @@
       </nav>
       <div class="sidebar-section">
         <div class="sidebar-label">ADHD focus</div>
-        <button id="focusToggle" class="focus-card">
-          <strong id="focusClock">25:00</strong>
-          <span>Start focus sprint</span>
-        </button>
+        <button id="focusToggle" class="focus-card"><strong id="focusClock">25:00</strong><span>Start focus sprint</span></button>
       </div>
       <div class="privacy-chip">● Local only</div>
     </aside>
 
     <main class="main-content">
       <header class="topbar">
-        <div>
-          <div class="eyebrow">YOUR PRIVATE LISTENING SPACE</div>
-          <h1 id="pageTitle">Good listening</h1>
-        </div>
-        <div class="top-actions">
-          <button id="importButton" class="primary">＋ Import book</button>
-          <button id="settingsButton" class="icon-button" aria-label="Settings">⚙</button>
-        </div>
+        <div><div class="eyebrow">YOUR PRIVATE LISTENING SPACE</div><h1 id="pageTitle">Good listening</h1></div>
+        <div class="top-actions"><button id="importButton" class="primary">＋ Import book</button><button id="settingsButton" class="icon-button" aria-label="Settings" title="Settings">⚙</button></div>
       </header>
 
       <section id="homeView" class="view active-view">
-        <section id="continueSection" class="section-block hidden">
-          <div class="section-heading"><h2>Continue listening</h2><span>Pick up where you left off</span></div>
-          <div id="continueGrid" class="card-grid"></div>
-        </section>
-
-        <section class="section-block">
-          <div class="section-heading"><h2>Your books</h2><span>PDF, TXT and Markdown</span></div>
-          <div id="bookGrid" class="card-grid"></div>
-          <div id="emptyLibrary" class="empty-state hidden">
-            <div class="empty-icon">▤</div>
-            <h3>Build your listening library</h3>
-            <p>Import a PDF or text book. Everything stays on this Mac.</p>
-            <button class="primary" onclick="document.getElementById('bookFile').click()">Import your first book</button>
-          </div>
-        </section>
+        <section id="continueSection" class="section-block hidden"><div class="section-heading"><h2>Continue listening</h2><span>Pick up where you left off</span></div><div id="continueGrid" class="card-grid"></div></section>
+        <section class="section-block"><div class="section-heading"><h2>Your books</h2><span>PDF, TXT and Markdown</span></div><div id="bookGrid" class="card-grid"></div><div id="emptyLibrary" class="empty-state hidden"><div class="empty-icon">▤</div><h3>Build your listening library</h3><p>Import a PDF or text book. Everything stays on this Mac.</p><button class="primary" onclick="document.getElementById('importDialog').showModal()">Import your first book</button></div></section>
       </section>
 
-      <section id="libraryView" class="view">
-        <div class="section-heading"><h2>Library</h2><span id="libraryCount"></span></div>
-        <div id="libraryList" class="library-list"></div>
-      </section>
+      <section id="libraryView" class="view"><div class="section-heading"><h2>Library</h2><span id="libraryCount"></span></div><div id="libraryList" class="library-list"></div></section>
 
-      <section id="followingView" class="view">
-        <div class="split-grid">
-          <div class="panel"><div class="section-heading"><h2>Authors you follow</h2></div><div id="followAuthors" class="chips"></div></div>
-          <div class="panel"><div class="section-heading"><h2>Series you follow</h2></div><div id="followSeries" class="chips"></div></div>
-        </div>
-        <div class="panel"><div class="section-heading"><h2>Activity</h2><span>Private activity feed</span></div><div id="activityFeed"></div></div>
-      </section>
+      <section id="followingView" class="view"><div class="split-grid"><div class="panel"><div class="section-heading"><h2>Authors you follow</h2></div><div id="followAuthors" class="chips"></div></div><div class="panel"><div class="section-heading"><h2>Series you follow</h2></div><div id="followSeries" class="chips"></div></div></div><div class="panel"><div class="section-heading"><h2>Activity</h2><button id="clearActivity" class="danger-ghost">Clear activity</button></div><div id="activityFeed"></div></div></section>
 
-      <section id="playlistsView" class="view">
-        <div class="section-heading"><h2>Playlists</h2><button id="newPlaylist" class="secondary">＋ New playlist</button></div>
-        <div id="playlistGrid" class="playlist-grid"></div>
-      </section>
+      <section id="playlistsView" class="view"><div class="section-heading"><h2>Playlists</h2><button id="newPlaylist" class="secondary">＋ New playlist</button></div><div id="playlistGrid" class="playlist-grid"></div></section>
 
       <section id="readerView" class="view reader-view">
-        <div class="reader-header">
-          <button id="backFromReader" class="ghost">← Library</button>
-          <div class="reader-meta"><span id="readerAuthor"></span><h2 id="readerTitle"></h2></div>
-          <div class="reader-actions"><button id="followAuthor" class="secondary">♡ Follow author</button><button id="addPlaylist" class="secondary">＋ Playlist</button></div>
-        </div>
+        <div class="reader-header"><button id="backFromReader" class="ghost">← Library</button><div class="reader-meta"><span id="readerAuthor"></span><h2 id="readerTitle"></h2></div><div class="reader-actions"><button id="followAuthor" class="secondary">♡ Follow author</button><button id="addPlaylist" class="secondary">＋ Playlist</button><button id="editBook" class="secondary">✎ Edit</button><button id="bookMenu" class="secondary">⋯</button></div></div>
         <div class="reader-layout">
-          <aside class="now-reading-card">
-            <div id="readerCover" class="cover large-cover"><span>LL</span></div>
-            <div class="book-status"><span id="generationStatus">Ready</span></div>
-            <button id="generateButton" class="primary wide">Generate audiobook</button>
-            <div class="mini-stats"><div><b id="readerWords">0</b><span>words</span></div><div><b id="readerFormat">TXT</b><span>source</span></div></div>
-          </aside>
-          <section class="readalong-panel">
-            <div class="readalong-toolbar">
-              <div><strong>Read along</strong><span>Active line follows the audio</span></div>
-              <div class="toolbar-actions"><button id="textMinus" class="tiny">A−</button><button id="textPlus" class="tiny">A＋</button><button id="focusLine" class="tiny">Focus line</button></div>
-            </div>
-            <div id="readalong" class="readalong"></div>
-          </section>
+          <aside class="now-reading-card"><div id="readerCover" class="cover large-cover"><span>LL</span></div><div class="book-status"><span id="generationStatus">Ready</span></div><button id="generateButton" class="primary wide">Generate audiobook</button><div class="stack-actions"><button id="clearAudio" class="secondary wide">Clear generated audio</button><button id="resetBookProgress" class="secondary wide">Reset progress</button><button id="deleteBook" class="danger wide">Delete book</button></div><div class="mini-stats"><div><b id="readerWords">0</b><span>words</span></div><div><b id="readerFormat">TXT</b><span>source</span></div></div></aside>
+          <section class="readalong-panel"><div class="readalong-toolbar"><div><strong>Read along</strong><span>Active line follows the audio</span></div><div class="toolbar-actions"><button id="textMinus" class="tiny">A−</button><button id="textPlus" class="tiny">A＋</button><button id="focusLine" class="tiny">Focus line</button></div></div><div id="readalong" class="readalong"></div></section>
           <aside class="sound-panel">
-            <div class="sound-section"><h3>Playback</h3><label>Speed <select id="speedSelect"><option>0.75</option><option>0.9</option><option selected>1</option><option>1.1</option><option>1.25</option><option>1.5</option><option>1.75</option><option>2</option></select></label></div>
+            <div class="sound-section"><h3>Playback</h3><label>Speed <select id="speedSelect"><option>0.75</option><option>0.9</option><option selected>1</option><option>1.1</option><option>1.25</option><option>1.5</option><option>1.75</option><option>2</option></select></label><label>Skip <select id="skipSelect"><option value="10">10 sec</option><option value="15" selected>15 sec</option><option value="30">30 sec</option><option value="60">60 sec</option></select></label></div>
             <div class="sound-section"><h3>Equalizer</h3><div class="preset-row"><button data-eq="flat" class="preset active">Flat</button><button data-eq="voice" class="preset">Voice</button><button data-eq="warm" class="preset">Warm</button><button data-eq="bright" class="preset">Bright</button></div><label>Bass <input id="bass" type="range" min="-12" max="12" value="0"></label><label>Mids <input id="mids" type="range" min="-12" max="12" value="0"></label><label>Treble <input id="treble" type="range" min="-12" max="12" value="0"></label></div>
             <div class="sound-section"><h3>Ambient sound</h3><div class="preset-row"><button data-ambience="off" class="ambience active">Off</button><button data-ambience="rain" class="ambience">Rain</button><button data-ambience="brown" class="ambience">Brown noise</button></div><label>Level <input id="ambienceLevel" type="range" min="0" max="0.35" step="0.01" value="0.08"></label></div>
             <div class="sound-section"><h3>Focus aids</h3><label class="toggle-line"><input id="largeText" type="checkbox"> Large text</label><label class="toggle-line"><input id="reduceMotion" type="checkbox"> Reduce motion</label></div>
@@ -107,18 +58,33 @@
   </div>
 
   <footer id="player" class="player hidden">
-    <div class="player-book"><div id="playerCover" class="cover mini-cover"><span>LL</span></div><div><strong id="playerTitle"></strong><span id="playerAuthor"></span></div></div>
-    <div class="transport"><div class="transport-buttons"><button id="rewind">−15</button><button id="playPause" class="play">▶</button><button id="forward">＋15</button></div><div class="timeline"><span id="currentTime">0:00</span><input id="seek" type="range" min="0" max="1000" value="0"><span id="duration">0:00</span></div></div>
-    <div class="player-tools"><button id="readerShortcut">▤ Read</button><button id="sleepButton">☾ 30m</button><input id="volume" type="range" min="0" max="1" step="0.01" value="1"></div>
+    <div class="player-book"><div id="playerCover" class="cover mini-cover"><span>LL</span></div><div><strong id="playerTitle"></strong><span id="playerAuthor"></span></div><button id="favoriteButton" class="transport-icon" title="Follow author" aria-label="Follow author">♡</button></div>
+    <div class="transport">
+      <div class="transport-buttons">
+        <button id="shuffleButton" class="transport-icon" title="Shuffle" aria-label="Shuffle">⤨</button>
+        <button id="previousButton" class="transport-icon" title="Previous book" aria-label="Previous book">⏮</button>
+        <button id="rewind" class="transport-icon" title="Skip backward" aria-label="Skip backward">↶15</button>
+        <button id="playPause" class="play" title="Play or pause" aria-label="Play or pause">▶</button>
+        <button id="forward" class="transport-icon" title="Skip forward" aria-label="Skip forward">15↷</button>
+        <button id="nextButton" class="transport-icon" title="Next book" aria-label="Next book">⏭</button>
+        <button id="repeatButton" class="transport-icon" title="Repeat" aria-label="Repeat">↻</button>
+      </div>
+      <div class="timeline"><span id="currentTime">0:00</span><input id="seek" aria-label="Seek" type="range" min="0" max="1000" value="0"><span id="duration">0:00</span></div>
+    </div>
+    <div class="player-tools"><button id="readerShortcut" title="Read along">▤ Read</button><button id="speedButton" title="Playback speed">1×</button><button id="sleepButton" title="Sleep timer">☾ Off</button><button id="muteButton" class="transport-icon" title="Mute" aria-label="Mute">🔊</button><input id="volume" aria-label="Volume" type="range" min="0" max="1" step="0.01" value="1"></div>
   </footer>
 
-  <input id="bookFile" type="file" accept=".pdf,.txt,.md" hidden>
-  <input id="voiceFile" type="file" accept="audio/*" hidden>
   <audio id="audio" preload="metadata"></audio>
 
-  <dialog id="importDialog"><form method="dialog" id="importForm"><div class="modal-head"><h2>Import a book</h2><button value="cancel">×</button></div><label>Book file<input id="dialogBookFile" type="file" accept=".pdf,.txt,.md" required></label><label>Title<input id="importTitle" placeholder="Use filename"></label><label>Author<input id="importAuthor" placeholder="Unknown author"></label><label>Series<input id="importSeries" placeholder="Optional"></label><div class="modal-actions"><button value="cancel" class="secondary">Cancel</button><button id="confirmImport" value="default" class="primary">Import locally</button></div></form></dialog>
+  <dialog id="importDialog"><form id="importForm"><div class="modal-head"><h2>Import a book</h2><button type="button" data-close="importDialog">×</button></div><label>Book file<input id="dialogBookFile" type="file" accept=".pdf,.txt,.md" required></label><label>Title<input id="importTitle" placeholder="Use filename"></label><label>Author<input id="importAuthor" placeholder="Unknown author"></label><label>Series<input id="importSeries" placeholder="Optional"></label><div class="modal-actions"><button type="button" data-close="importDialog" class="secondary">Cancel</button><button id="confirmImport" type="submit" class="primary">Import locally</button></div></form></dialog>
 
-  <dialog id="settingsDialog"><form method="dialog" id="settingsForm"><div class="modal-head"><h2>Local voice setup</h2><button value="cancel">×</button></div><p class="muted">Stored only inside your local ListenLeaf library. No upload to any cloud service.</p><label>Reference audio<input id="voiceReference" type="file" accept="audio/*"></label><label>Reference transcript<textarea id="voiceTranscript" rows="4" placeholder="Exact words spoken in the reference audio"></textarea></label><div id="voiceState" class="status-box"></div><div class="modal-actions"><button value="cancel" class="secondary">Close</button><button id="saveVoice" value="default" class="primary">Save voice locally</button></div></form></dialog>
+  <dialog id="settingsDialog"><form id="settingsForm"><div class="modal-head"><h2>Settings & local data</h2><button type="button" data-close="settingsDialog">×</button></div><div class="settings-grid"><section><h3>Appearance</h3><label>Theme<select id="themeSelect"><option value="midnight">Midnight</option><option value="graphite">Graphite</option><option value="paper">Paper</option><option value="ocean">Ocean</option></select></label></section><section><h3>Voice</h3><label>Reference audio<input id="voiceReference" type="file" accept="audio/*"></label><label>Reference transcript<textarea id="voiceTranscript" rows="3" placeholder="Exact words spoken"></textarea></label><div id="voiceState" class="status-box"></div><div class="button-row"><button id="saveVoice" type="button" class="primary">Save voice</button><button id="deleteVoice" type="button" class="danger-ghost">Delete voice data</button></div></section><section><h3>Storage</h3><div id="storageState" class="status-box"></div><div class="button-row wrap"><button id="clearCache" type="button" class="secondary">Clear cache</button><button id="clearProgress" type="button" class="secondary">Clear all progress</button><button id="clearAllActivity" type="button" class="secondary">Clear activity</button></div></section><section class="danger-zone"><h3>Danger zone</h3><p>Deletes every imported book, generated audio, playlist, progress record, preference and local voice reference.</p><button id="resetAllData" type="button" class="danger">Delete all local data</button></section></div><div class="modal-actions"><button type="button" data-close="settingsDialog" class="secondary">Close</button></div></form></dialog>
+
+  <dialog id="editBookDialog"><form id="editBookForm"><div class="modal-head"><h2>Edit book</h2><button type="button" data-close="editBookDialog">×</button></div><label>Title<input id="editBookTitle" required></label><label>Author<input id="editBookAuthor"></label><label>Series<input id="editBookSeries"></label><div class="modal-actions"><button type="button" data-close="editBookDialog" class="secondary">Cancel</button><button type="submit" class="primary">Save changes</button></div></form></dialog>
+
+  <dialog id="playlistDialog"><form id="playlistForm"><div class="modal-head"><h2 id="playlistDialogTitle">Playlist</h2><button type="button" data-close="playlistDialog">×</button></div><input id="playlistId" type="hidden"><label>Name<input id="playlistName" required></label><div id="playlistBooks" class="playlist-editor"></div><div class="modal-actions"><button id="deletePlaylist" type="button" class="danger hidden">Delete playlist</button><button type="button" data-close="playlistDialog" class="secondary">Cancel</button><button type="submit" class="primary">Save playlist</button></div></form></dialog>
+
+  <dialog id="confirmDialog"><form id="confirmForm"><div class="modal-head"><h2 id="confirmTitle">Confirm</h2></div><p id="confirmMessage"></p><div class="modal-actions"><button id="confirmCancel" type="button" class="secondary">Cancel</button><button id="confirmYes" type="button" class="danger">Delete</button></div></form></dialog>
 
   <script src="/static/app.js"></script>
 </body>
