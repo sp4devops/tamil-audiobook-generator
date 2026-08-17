@@ -56,16 +56,22 @@ jobs:
         run: |
           set -euo pipefail
           node --check tamil_audiobook/static/app.js
+          node --check tamil_audiobook/static/progressive.js
           python -m pytest -q tests
           python scripts/audiobook.py --library "$RUNNER_TEMP/listenleaf-library" list
           python - <<'PY'
           from tamil_audiobook.app import app
           routes = {route.path for route in app.routes}
-          required = {'/', '/api/dashboard', '/api/books/import', '/api/voice-reference', '/api/books/{book_id}/estimate'}
+          required = {
+              '/', '/api/dashboard', '/api/books/import', '/api/voice-reference',
+              '/api/books/{book_id}/estimate', '/api/books/{book_id}/generation',
+              '/api/books/{book_id}/chunks/{chunk_index}', '/api/jobs/{job_id}'
+          }
           missing = required - routes
           if missing:
               raise SystemExit(f'Missing app routes: {sorted(missing)}')
           print('app_route_smoke=PASS')
+          print('progressive_route_smoke=PASS')
           PY
 
       - name: Materialize final 11-minute accepted-C default voice
