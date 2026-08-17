@@ -52,10 +52,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r stage2_requirements.txt
 
-      - name: Run complete unit test suite
+      - name: Run complete app and unit test suite
         shell: bash
         run: |
           set -euo pipefail
+          node --check tamil_audiobook/static/app.js
           python -m pytest -q tests
           python scripts/audiobook.py --library "$RUNNER_TEMP/listenleaf-library" list
           python - <<'PY'
