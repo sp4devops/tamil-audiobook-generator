@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from tamil_audiobook.engine import (
-    DEFAULT_GUIDIDANCE_SCALE if False else DEFAULT_GUIDANCE_SCALE,
+    DEFAULT_GUIDANCE_SCALE,
     DEFAULT_NUM_STEPS,
     _crossfade_join,
     chunk_text,
