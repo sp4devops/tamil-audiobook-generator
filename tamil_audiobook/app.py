@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -28,11 +29,41 @@ def _job_update(job_id: str, **fields) -> None:
         _jobs.setdefault(job_id, {}).update(fields)
 
 
+def _public_job(job_id: str) -> dict:
+    with _jobs_lock:
+        payload = dict(_jobs.get(job_id, {}))
+    if not payload:
+        raise FileNotFoundError(job_id)
+    started = payload.pop("_started_monotonic", None)
+    if started is not None and payload.get("status") in {"queued", "running"}:
+        payload["elapsed_seconds"] = round(max(0.0, time.monotonic() - float(started)), 1)
+    return payload
+
+
+def _active_job_for_book(book_id: str) -> tuple[str, dict] | None:
+    with _jobs_lock:
+        candidates = [
+            (job_id, dict(payload))
+            for job_id, payload in _jobs.items()
+            if payload.get("book_id") == book_id and payload.get("status") in {"queued", "running"}
+        ]
+    if not candidates:
+        return None
+    job_id, _ = candidates[-1]
+    return job_id, _public_job(job_id)
+
+
 def _voice_status() -> tuple[bool, str]:
     custom_audio, custom_text = library.voice_reference_paths()
     if custom_audio.is_file() and custom_text.is_file() and custom_text.read_text(encoding="utf-8").strip():
         return True, "custom"
     return default_voice_available(), "accepted-c-default" if default_voice_available() else "missing"
+
+
+def _chunk_path(book_id: str, chunk_index: int) -> Path:
+    if chunk_index < 0:
+        raise FileNotFoundError(chunk_index)
+    return library._book_dir(book_id) / "chunks" / f"chunk_{chunk_index:05d}.flac"
 
 
 def _generate(job_id: str, book_id: str) -> None:
@@ -43,6 +74,7 @@ def _generate(job_id: str, book_id: str) -> None:
         wav = book_dir / "audiobook.wav"
         mp3 = book_dir / "audiobook.mp3"
         report_path = book_dir / "report.json"
+        checkpoint_dir = book_dir / "chunks"
 
         def on_progress(payload: dict) -> None:
             _job_update(job_id, status="running", voice_source=voice_source, **payload)
@@ -58,6 +90,7 @@ def _generate(job_id: str, book_id: str) -> None:
             guidance_scale=DEFAULT_GUIDANCE_SCALE,
             report_path=report_path,
             progress_callback=on_progress,
+            checkpoint_dir=checkpoint_dir,
         )
         cues = library.build_cues(book_id, report)
         wav.unlink(missing_ok=True)
@@ -66,6 +99,9 @@ def _generate(job_id: str, book_id: str) -> None:
             status="completed",
             stage="ready",
             percent=100.0,
+            completed_chunks=report["chunks"],
+            playable_chunks=report["chunks"],
+            total_chunks=report["chunks"],
             estimated_remaining_seconds=0.0,
             book_id=book_id,
             title=book["title"],
@@ -73,6 +109,7 @@ def _generate(job_id: str, book_id: str) -> None:
             audio_seconds=report["audio_seconds"],
             generation_seconds=report["generation_seconds"],
             aggregate_rtf=report["aggregate_rtf"],
+            resumed_chunks=report.get("resumed_chunks", 0),
             cues=len(cues),
         )
     except Exception as exc:
@@ -111,6 +148,11 @@ def book_detail(book_id: str) -> dict:
             report = json.loads(report_path.read_text(encoding="utf-8"))
             book["audio_seconds"] = float(report.get("audio_seconds", 0.0))
             book["generation_seconds"] = float(report.get("generation_seconds", 0.0))
+        chunks_dir = library._book_dir(book_id) / "chunks"
+        playable_chunks = 0
+        while (chunks_dir / f"chunk_{playable_chunks:05d}.flac").is_file():
+            playable_chunks += 1
+        book["playable_chunks"] = playable_chunks
         book["estimate"] = estimate_audiobook(book["text"])
         return book
     except FileNotFoundError:
@@ -221,6 +263,12 @@ def generate_book(book_id: str) -> dict:
     ready, source = _voice_status()
     if not ready:
         raise HTTPException(409, "No voice reference is available")
+
+    active = _active_job_for_book(book_id)
+    if active:
+        job_id, payload = active
+        return {"job_id": job_id, "status": payload["status"], "estimate": estimate_audiobook(book_text), "voice_source": source, "resumed_existing_job": True}
+
     estimate = estimate_audiobook(book_text)
     job_id = uuid.uuid4().hex[:12]
     _job_update(
@@ -231,31 +279,60 @@ def generate_book(book_id: str) -> dict:
         voice_source=source,
         percent=0.0,
         completed_chunks=0,
+        playable_chunks=0,
         total_chunks=estimate["chunks"],
         estimated_audio_seconds=estimate["audio_seconds"],
         estimated_generation_seconds=estimate["generation_seconds"],
         estimated_remaining_seconds=estimate["generation_seconds"],
         elapsed_seconds=0.0,
+        _started_monotonic=time.monotonic(),
     )
     threading.Thread(target=_generate, args=(job_id, book_id), daemon=True).start()
-    return {"job_id": job_id, "status": "queued", "estimate": estimate, "voice_source": source}
+    return {"job_id": job_id, "status": "queued", "estimate": estimate, "voice_source": source, "resumed_existing_job": False}
 
 
 @app.get("/api/jobs/{job_id}")
 def job(job_id: str) -> dict:
-    with _jobs_lock:
-        payload = dict(_jobs.get(job_id, {}))
-    if not payload:
+    try:
+        return _public_job(job_id)
+    except FileNotFoundError:
         raise HTTPException(404, "Job not found")
-    return payload
+
+
+@app.get("/api/books/{book_id}/generation")
+def book_generation(book_id: str) -> dict:
+    try:
+        library.get_book(book_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Book not found")
+    active = _active_job_for_book(book_id)
+    if not active:
+        return {"active": False}
+    job_id, payload = active
+    return {"active": True, "job_id": job_id, **payload}
+
+
+@app.get("/api/books/{book_id}/chunks/{chunk_index}")
+def generated_chunk(book_id: str, chunk_index: int):
+    try:
+        library.get_book(book_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Book not found")
+    path = _chunk_path(book_id, chunk_index)
+    if not path.is_file():
+        raise HTTPException(404, "Chunk is not available yet")
+    return FileResponse(path, media_type="audio/flac", filename=path.name)
 
 
 @app.get("/api/books/{book_id}/audio")
 def audio(book_id: str):
     path = library.audio_path(book_id)
-    if not path.is_file():
-        raise HTTPException(404, "Audio has not been generated")
-    return FileResponse(path, media_type="audio/mpeg", filename=f"{book_id}.mp3")
+    if path.is_file():
+        return FileResponse(path, media_type="audio/mpeg", filename=f"{book_id}.mp3")
+    preview = _chunk_path(book_id, 0)
+    if preview.is_file():
+        return FileResponse(preview, media_type="audio/flac", filename=f"{book_id}-preview.flac")
+    raise HTTPException(404, "Audio has not been generated yet")
 
 
 @app.post("/api/books/{book_id}/progress")
