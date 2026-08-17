@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -23,6 +24,14 @@ DEFAULT_MAX_CHARS = 220
 DEFAULT_ESTIMATE_RTF = 1.55
 DEFAULT_ESTIMATE_STARTUP_SECONDS = 20.0
 
+# Sustained MLX/Metal inference can keep an 8 GB Apple-Silicon Mac under constant
+# compute load for hours on long books. Thermal pacing inserts an idle window only
+# between newly synthesized chunks; it does not change model, sampling or audio.
+GENERATION_MODE_PAUSE_SECONDS = {"fast": 0.0, "balanced": 2.0, "cool": 5.0}
+DEFAULT_GENERATION_MODE = os.environ.get("LISTENLEAF_GENERATION_MODE", "balanced").strip().lower()
+if DEFAULT_GENERATION_MODE not in GENERATION_MODE_PAUSE_SECONDS:
+    DEFAULT_GENERATION_MODE = "balanced"
+
 _TAMIL_RE = re.compile(r"[\u0B80-\u0BFF]")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?।])\s+|(?<=\u0B83)\s+|\n+")
 
@@ -32,6 +41,13 @@ class Chunk:
     text: str
     language: str
     estimated_seconds: float
+
+
+def generation_pause_seconds(mode: str) -> float:
+    normalized = str(mode or "").strip().lower()
+    if normalized not in GENERATION_MODE_PAUSE_SECONDS:
+        raise ValueError(f"generation_mode must be one of {', '.join(GENERATION_MODE_PAUSE_SECONDS)}")
+    return GENERATION_MODE_PAUSE_SECONDS[normalized]
 
 
 def detect_language(text: str) -> str:
@@ -112,19 +128,34 @@ def estimate_audiobook(
     max_chars: int = DEFAULT_MAX_CHARS,
     estimate_rtf: float = DEFAULT_ESTIMATE_RTF,
     startup_seconds: float = DEFAULT_ESTIMATE_STARTUP_SECONDS,
+    generation_mode: str = DEFAULT_GENERATION_MODE,
 ) -> dict:
     chunks = chunk_text(text, target_chars=target_chars, max_chars=max_chars)
+    pause_seconds = generation_pause_seconds(generation_mode)
     if not chunks:
-        return {"chunks": 0, "audio_seconds": 0.0, "generation_seconds": 0.0}
+        return {
+            "chunks": 0,
+            "audio_seconds": 0.0,
+            "generation_seconds": 0.0,
+            "generation_mode": generation_mode,
+            "thermal_pause_seconds": pause_seconds,
+        }
     raw_audio_seconds = sum(chunk.estimated_seconds for chunk in chunks)
     overlap = max(0, len(chunks) - 1) * max(0, crossfade_ms) / 1000.0
     audio_seconds = max(0.0, raw_audio_seconds - overlap)
-    generation_seconds = max(0.0, startup_seconds + audio_seconds * max(0.1, estimate_rtf))
+    thermal_idle_seconds = pause_seconds * max(0, len(chunks) - 1)
+    generation_seconds = max(
+        0.0,
+        startup_seconds + audio_seconds * max(0.1, estimate_rtf) + thermal_idle_seconds,
+    )
     return {
         "chunks": len(chunks),
         "audio_seconds": round(audio_seconds, 1),
         "generation_seconds": round(generation_seconds, 1),
         "estimate_rtf": estimate_rtf,
+        "generation_mode": generation_mode,
+        "thermal_pause_seconds": pause_seconds,
+        "estimated_thermal_idle_seconds": round(thermal_idle_seconds, 1),
     }
 
 
@@ -177,6 +208,8 @@ def _checkpoint_key(
     digest.update(reference_text.encode("utf-8"))
     digest.update(b"\0")
     digest.update(reference_audio.read_bytes())
+    # Generation mode is deliberately excluded: thermal pacing changes wall time,
+    # never audio content, so checkpoints remain reusable when switching modes.
     digest.update(
         f"{MODEL_ID}|{num_steps}|{guidance_scale}|{crossfade_ms}|{target_chars}|{max_chars}".encode("utf-8")
     )
@@ -263,6 +296,7 @@ def synthesize_audiobook(
     report_path: Path | None = None,
     progress_callback: Callable[[dict], None] | None = None,
     checkpoint_dir: Path | None = None,
+    generation_mode: str = DEFAULT_GENERATION_MODE,
 ) -> dict:
     if not reference_audio.is_file():
         raise FileNotFoundError(reference_audio)
@@ -270,6 +304,7 @@ def synthesize_audiobook(
         raise ValueError("reference text is empty")
     if guidance_scale <= 0:
         raise ValueError("guidance_scale must be positive")
+    pause_seconds = generation_pause_seconds(generation_mode)
     chunks = chunk_text(text, target_chars=target_chars, max_chars=max_chars)
     if not chunks:
         raise ValueError("input text is empty")
@@ -279,6 +314,8 @@ def synthesize_audiobook(
     def progress(**payload) -> None:
         if progress_callback is not None:
             payload.setdefault("elapsed_seconds", round(time.perf_counter() - total_started, 1))
+            payload.setdefault("generation_mode", generation_mode)
+            payload.setdefault("thermal_pause_seconds", pause_seconds)
             progress_callback(payload)
 
     cached_prefix = 0
@@ -348,6 +385,7 @@ def synthesize_audiobook(
     generation_started = time.perf_counter()
     generated_new_count = 0
     generated_new_seconds = 0.0
+    thermal_idle_seconds = 0.0
 
     try:
         for index, chunk in enumerate(chunks):
@@ -419,7 +457,7 @@ def synthesize_audiobook(
             completed = index + 1
             remaining_missing = sum(1 for item in missing_chunks if item > index)
             average_new = generated_new_seconds / generated_new_count if generated_new_count else 0.0
-            remaining = max(0.0, average_new * remaining_missing)
+            remaining = max(0.0, (average_new + pause_seconds) * remaining_missing)
             percent = 5.0 + 90.0 * completed / len(chunks)
             progress(
                 stage="synthesizing" if remaining_missing or not cached else "assembling_cached",
@@ -430,7 +468,26 @@ def synthesize_audiobook(
                 estimated_remaining_seconds=round(remaining, 1) if generated_new_count else None,
                 generated_audio_seconds=round(sum(item["audio_seconds"] for item in chunk_reports), 1),
                 resumed_chunks=sum(1 for item in chunk_reports if item["cached"]),
+                thermal_idle_seconds=round(thermal_idle_seconds, 1),
             )
+
+            # Give Apple Silicon a predictable idle window between expensive Metal
+            # calls. Skip cached chunks and the final chunk so resume stays fast.
+            if not cached and pause_seconds > 0 and remaining_missing > 0:
+                progress(
+                    stage="cooling",
+                    completed_chunks=completed,
+                    playable_chunks=completed,
+                    total_chunks=len(chunks),
+                    percent=round(percent, 1),
+                    estimated_remaining_seconds=round(remaining, 1),
+                    generated_audio_seconds=round(sum(item["audio_seconds"] for item in chunk_reports), 1),
+                    resumed_chunks=sum(1 for item in chunk_reports if item["cached"]),
+                    cooling_seconds=pause_seconds,
+                    thermal_idle_seconds=round(thermal_idle_seconds, 1),
+                )
+                time.sleep(pause_seconds)
+                thermal_idle_seconds += pause_seconds
 
         assert writer is not None and sample_rate is not None
         if pending_tail is not None and len(pending_tail):
@@ -448,6 +505,7 @@ def synthesize_audiobook(
         total_chunks=len(chunks),
         percent=97.0,
         estimated_remaining_seconds=3.0,
+        thermal_idle_seconds=round(thermal_idle_seconds, 1),
     )
     if output_mp3 is not None:
         output_mp3.parent.mkdir(parents=True, exist_ok=True)
@@ -461,6 +519,9 @@ def synthesize_audiobook(
         "num_steps": num_steps,
         "guidance_scale": guidance_scale,
         "crossfade_ms": crossfade_ms,
+        "generation_mode": generation_mode,
+        "thermal_pause_seconds": pause_seconds,
+        "thermal_idle_seconds": round(thermal_idle_seconds, 3),
         "chunks": len(chunks),
         "resumed_chunks": sum(1 for item in chunk_reports if item["cached"]),
         "model_load_seconds": round(model_load_seconds, 3),
@@ -481,5 +542,6 @@ def synthesize_audiobook(
         percent=100.0,
         estimated_remaining_seconds=0.0,
         audio_seconds=round(audio_seconds, 1),
+        thermal_idle_seconds=round(thermal_idle_seconds, 1),
     )
     return report
