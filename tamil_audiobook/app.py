@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .engine import DEFAULT_GUIDANCE_SCALE, DEFAULT_NUM_STEPS, estimate_audiobook, synthesize_audiobook
 from .library import LocalLibrary
-from .voice import default_voice_available, resolve_voice
+from .voice import ORIGINAL_REQUIRED_LABEL, ORIGINAL_SOURCE_LABEL, original_voice_available, resolve_voice
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = PACKAGE_ROOT / "static"
@@ -54,10 +54,9 @@ def _active_job_for_book(book_id: str) -> tuple[str, dict] | None:
 
 
 def _voice_status() -> tuple[bool, str]:
-    custom_audio, custom_text = library.voice_reference_paths()
-    if custom_audio.is_file() and custom_text.is_file() and custom_text.read_text(encoding="utf-8").strip():
-        return True, "custom"
-    return default_voice_available(), "accepted-c-default" if default_voice_available() else "missing"
+    if original_voice_available(library):
+        return True, ORIGINAL_SOURCE_LABEL
+    return False, ORIGINAL_REQUIRED_LABEL
 
 
 def _chunk_path(book_id: str, chunk_index: int) -> Path:
@@ -239,7 +238,7 @@ async def save_voice_reference(audio: UploadFile = File(...), transcript: str = 
             )
             library.save_voice_reference(converted, transcript)
             converted.unlink(missing_ok=True)
-        return {"status": "ok", "voice_ready": True, "voice_source": "custom", "stored_locally": str(target)}
+        return {"status": "ok", "voice_ready": True, "voice_source": ORIGINAL_SOURCE_LABEL, "stored_locally": str(target)}
     except Exception as exc:
         raise HTTPException(400, str(exc))
     finally:
@@ -249,8 +248,8 @@ async def save_voice_reference(audio: UploadFile = File(...), transcript: str = 
 @app.delete("/api/voice-reference")
 def delete_voice_reference() -> dict:
     result = library.delete_voice_reference()
-    result["voice_ready"] = default_voice_available()
-    result["voice_source"] = "accepted-c-default" if default_voice_available() else "missing"
+    result["voice_ready"] = False
+    result["voice_source"] = ORIGINAL_REQUIRED_LABEL
     return result
 
 
@@ -262,7 +261,7 @@ def generate_book(book_id: str) -> dict:
         raise HTTPException(404, "Book not found")
     ready, source = _voice_status()
     if not ready:
-        raise HTTPException(409, "No voice reference is available")
+        raise HTTPException(409, "Original source voice is required. Add the original recording and its exact transcript in Settings before generating.")
 
     active = _active_job_for_book(book_id)
     if active:
