@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,6 +69,10 @@ class LocalLibrary:
         self.private_root = self.root / "private"
         self.cache_root = self.root / "cache"
         self.state_path = self.root / "state.json"
+        # FastAPI can execute sync endpoints concurrently. Protect complete
+        # read-modify-write state transactions so progress, preferences and
+        # playlists cannot overwrite one another.
+        self._state_lock = threading.RLock()
         self.books_root.mkdir(parents=True, exist_ok=True)
         self.private_root.mkdir(parents=True, exist_ok=True)
         self.cache_root.mkdir(parents=True, exist_ok=True)
@@ -99,18 +104,24 @@ class LocalLibrary:
         }
 
     def _state(self) -> dict[str, Any]:
-        state = _read_json(self.state_path, self._default_state())
-        defaults = self._default_state()
-        for key, value in defaults.items():
-            if key not in state:
-                state[key] = value
-            elif isinstance(value, dict) and isinstance(state[key], dict):
-                for nested_key, nested_value in value.items():
-                    state[key].setdefault(nested_key, nested_value)
-        return state
+        with self._state_lock:
+            state = _read_json(self.state_path, self._default_state())
+            defaults = self._default_state()
+            for key, value in defaults.items():
+                if key not in state:
+                    state[key] = value
+                elif isinstance(value, dict) and isinstance(state[key], dict):
+                    for nested_key, nested_value in value.items():
+                        state[key].setdefault(nested_key, nested_value)
+            return state
 
     def _write_state(self, state: dict[str, Any]) -> None:
-        _atomic_json(self.state_path, state)
+        with self._state_lock:
+            _atomic_json(self.state_path, state)
+
+    def preferences(self) -> dict[str, Any]:
+        """Return a detached snapshot of persisted preferences."""
+        return dict(self._state()["preferences"])
 
     def _book_dir(self, book_id: str) -> Path:
         path = (self.books_root / book_id).resolve()
@@ -151,7 +162,8 @@ class LocalLibrary:
         self._add_activity("import", book_id, meta["title"])
         return self.get_book(book_id)
 
-    def list_books(self) -> list[dict[str, Any]]:
+    def list_books(self, *, _state_snapshot: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        state = _state_snapshot if _state_snapshot is not None else self._state()
         books = []
         for item in self.books_root.iterdir():
             if not item.is_dir():
@@ -159,7 +171,7 @@ class LocalLibrary:
             meta = _read_json(item / "metadata.json", None)
             if not meta:
                 continue
-            books.append(self._decorate(meta))
+            books.append(self._decorate(meta, state=state))
         return sorted(books, key=lambda book: book.get("updated_at", ""), reverse=True)
 
     def get_book(self, book_id: str) -> dict[str, Any]:
@@ -189,26 +201,28 @@ class LocalLibrary:
         return self.get_book(book_id)
 
     def delete_book(self, book_id: str) -> dict[str, Any]:
-        book = self.get_book(book_id)
-        book_dir = self._book_dir(book_id)
-        shutil.rmtree(book_dir)
-        state = self._state()
-        state["progress"].pop(book_id, None)
-        for playlist in state["playlists"]:
-            playlist["books"] = [item for item in playlist["books"] if item != book_id]
-            playlist["updated_at"] = _now()
-        self._write_state(state)
-        self._add_activity("delete", book_id, book["title"])
-        return {"status": "deleted", "book_id": book_id, "title": book["title"]}
+        with self._state_lock:
+            book = self.get_book(book_id)
+            book_dir = self._book_dir(book_id)
+            shutil.rmtree(book_dir)
+            state = self._state()
+            state["progress"].pop(book_id, None)
+            for playlist in state["playlists"]:
+                playlist["books"] = [item for item in playlist["books"] if item != book_id]
+                playlist["updated_at"] = _now()
+            self._write_state(state)
+            self._add_activity("delete", book_id, book["title"])
+            return {"status": "deleted", "book_id": book_id, "title": book["title"]}
 
-    def _decorate(self, meta: dict[str, Any]) -> dict[str, Any]:
+    def _decorate(self, meta: dict[str, Any], *, state: dict[str, Any] | None = None) -> dict[str, Any]:
         book_dir = self._book_dir(meta["id"])
-        state = self._state()
+        snapshot = state if state is not None else self._state()
         result = dict(meta)
-        result["has_audio"] = (book_dir / "audiobook.mp3").is_file()
+        audio = book_dir / "audiobook.mp3"
+        result["has_audio"] = audio.is_file()
         result["has_cues"] = (book_dir / "cues.json").is_file()
-        result["audio_bytes"] = (book_dir / "audiobook.mp3").stat().st_size if result["has_audio"] else 0
-        result["progress"] = state["progress"].get(meta["id"], {"seconds": 0.0, "duration": 0.0})
+        result["audio_bytes"] = audio.stat().st_size if result["has_audio"] else 0
+        result["progress"] = dict(snapshot["progress"].get(meta["id"], {"seconds": 0.0, "duration": 0.0}))
         return result
 
     def text(self, book_id: str) -> str:
@@ -258,22 +272,23 @@ class LocalLibrary:
         return cues
 
     def delete_generated_audio(self, book_id: str) -> dict[str, Any]:
-        self.get_book(book_id)
-        book_dir = self._book_dir(book_id)
-        removed = []
-        for name in ("audiobook.mp3", "audiobook.wav", "report.json", "cues.json"):
-            path = book_dir / name
-            if path.exists():
-                path.unlink()
-                removed.append(name)
-        chunks = book_dir / "chunks"
-        if chunks.exists():
-            shutil.rmtree(chunks)
-            removed.append("chunks")
-        state = self._state()
-        state["progress"].pop(book_id, None)
-        self._write_state(state)
-        return {"status": "cleared", "book_id": book_id, "removed": removed}
+        with self._state_lock:
+            self.get_book(book_id)
+            book_dir = self._book_dir(book_id)
+            removed = []
+            for name in ("audiobook.mp3", "audiobook.wav", "report.json", "cues.json"):
+                path = book_dir / name
+                if path.exists():
+                    path.unlink()
+                    removed.append(name)
+            chunks = book_dir / "chunks"
+            if chunks.exists():
+                shutil.rmtree(chunks)
+                removed.append("chunks")
+            state = self._state()
+            state["progress"].pop(book_id, None)
+            self._write_state(state)
+            return {"status": "cleared", "book_id": book_id, "removed": removed}
 
     def voice_reference_paths(self) -> tuple[Path, Path]:
         return self.private_root / "voice_reference.wav", self.private_root / "voice_reference.txt"
@@ -299,48 +314,52 @@ class LocalLibrary:
         return audio.is_file() and text.is_file() and bool(text.read_text(encoding="utf-8").strip())
 
     def update_progress(self, book_id: str, seconds: float, duration: float) -> dict[str, Any]:
-        self.get_book(book_id)
-        state = self._state()
-        entry = {
-            "seconds": max(0.0, float(seconds)),
-            "duration": max(0.0, float(duration)),
-            "updated_at": _now(),
-        }
-        state["progress"][book_id] = entry
-        self._write_state(state)
-        return entry
+        with self._state_lock:
+            self.get_book(book_id)
+            state = self._state()
+            entry = {
+                "seconds": max(0.0, float(seconds)),
+                "duration": max(0.0, float(duration)),
+                "updated_at": _now(),
+            }
+            state["progress"][book_id] = entry
+            self._write_state(state)
+            return entry
 
     def clear_progress(self, book_id: str | None = None) -> dict[str, Any]:
-        state = self._state()
-        if book_id is None:
-            count = len(state["progress"])
-            state["progress"] = {}
-        else:
-            self.get_book(book_id)
-            count = int(book_id in state["progress"])
-            state["progress"].pop(book_id, None)
-        self._write_state(state)
-        return {"status": "cleared", "entries": count}
+        with self._state_lock:
+            state = self._state()
+            if book_id is None:
+                count = len(state["progress"])
+                state["progress"] = {}
+            else:
+                self.get_book(book_id)
+                count = int(book_id in state["progress"])
+                state["progress"].pop(book_id, None)
+            self._write_state(state)
+            return {"status": "cleared", "entries": count}
 
     def save_preferences(self, preferences: dict[str, Any]) -> dict[str, Any]:
-        state = self._state()
-        allowed = set(self._default_state()["preferences"])
-        for key, value in preferences.items():
-            if key in allowed:
-                state["preferences"][key] = value
-        self._write_state(state)
-        return state["preferences"]
+        with self._state_lock:
+            state = self._state()
+            allowed = set(self._default_state()["preferences"])
+            for key, value in preferences.items():
+                if key in allowed:
+                    state["preferences"][key] = value
+            self._write_state(state)
+            return dict(state["preferences"])
 
     def create_playlist(self, name: str) -> dict[str, Any]:
         name = name.strip()
         if not name:
             raise ValueError("playlist name is required")
-        state = self._state()
-        now = _now()
-        playlist = {"id": uuid.uuid4().hex[:10], "name": name, "books": [], "created_at": now, "updated_at": now}
-        state["playlists"].append(playlist)
-        self._write_state(state)
-        return playlist
+        with self._state_lock:
+            state = self._state()
+            now = _now()
+            playlist = {"id": uuid.uuid4().hex[:10], "name": name, "books": [], "created_at": now, "updated_at": now}
+            state["playlists"].append(playlist)
+            self._write_state(state)
+            return dict(playlist)
 
     def get_playlist(self, playlist_id: str) -> dict[str, Any]:
         state = self._state()
@@ -350,47 +369,51 @@ class LocalLibrary:
         raise FileNotFoundError(playlist_id)
 
     def update_playlist(self, playlist_id: str, *, name: str | None = None, books: list[str] | None = None) -> dict[str, Any]:
-        state = self._state()
-        for playlist in state["playlists"]:
-            if playlist["id"] != playlist_id:
-                continue
-            if name is not None:
-                clean = name.strip()
-                if not clean:
-                    raise ValueError("playlist name is required")
-                playlist["name"] = clean
-            if books is not None:
-                normalized = []
-                for book_id in books:
-                    self.get_book(book_id)
-                    if book_id not in normalized:
-                        normalized.append(book_id)
-                playlist["books"] = normalized
-            playlist["updated_at"] = _now()
-            self._write_state(state)
-            return dict(playlist)
-        raise FileNotFoundError(playlist_id)
+        with self._state_lock:
+            state = self._state()
+            for playlist in state["playlists"]:
+                if playlist["id"] != playlist_id:
+                    continue
+                if name is not None:
+                    clean = name.strip()
+                    if not clean:
+                        raise ValueError("playlist name is required")
+                    playlist["name"] = clean
+                if books is not None:
+                    normalized = []
+                    for book_id in books:
+                        self.get_book(book_id)
+                        if book_id not in normalized:
+                            normalized.append(book_id)
+                    playlist["books"] = normalized
+                playlist["updated_at"] = _now()
+                self._write_state(state)
+                return dict(playlist)
+            raise FileNotFoundError(playlist_id)
 
     def delete_playlist(self, playlist_id: str) -> dict[str, Any]:
-        state = self._state()
-        before = len(state["playlists"])
-        state["playlists"] = [playlist for playlist in state["playlists"] if playlist["id"] != playlist_id]
-        if len(state["playlists"]) == before:
-            raise FileNotFoundError(playlist_id)
-        self._write_state(state)
-        return {"status": "deleted", "playlist_id": playlist_id}
+        with self._state_lock:
+            state = self._state()
+            before = len(state["playlists"])
+            state["playlists"] = [playlist for playlist in state["playlists"] if playlist["id"] != playlist_id]
+            if len(state["playlists"]) == before:
+                raise FileNotFoundError(playlist_id)
+            self._write_state(state)
+            return {"status": "deleted", "playlist_id": playlist_id}
 
     def add_to_playlist(self, playlist_id: str, book_id: str) -> dict[str, Any]:
-        self.get_book(book_id)
-        playlist = self.get_playlist(playlist_id)
-        books = list(playlist["books"])
-        if book_id not in books:
-            books.append(book_id)
-        return self.update_playlist(playlist_id, books=books)
+        with self._state_lock:
+            self.get_book(book_id)
+            playlist = self.get_playlist(playlist_id)
+            books = list(playlist["books"])
+            if book_id not in books:
+                books.append(book_id)
+            return self.update_playlist(playlist_id, books=books)
 
     def remove_from_playlist(self, playlist_id: str, book_id: str) -> dict[str, Any]:
-        playlist = self.get_playlist(playlist_id)
-        return self.update_playlist(playlist_id, books=[item for item in playlist["books"] if item != book_id])
+        with self._state_lock:
+            playlist = self.get_playlist(playlist_id)
+            return self.update_playlist(playlist_id, books=[item for item in playlist["books"] if item != book_id])
 
     def set_follow(self, kind: str, value: str, follow: bool = True) -> dict[str, Any]:
         if kind not in {"authors", "series"}:
@@ -398,27 +421,30 @@ class LocalLibrary:
         value = value.strip()
         if not value:
             raise ValueError("follow value is required")
-        state = self._state()
-        items = state["follows"][kind]
-        if follow and value not in items:
-            items.append(value)
-        if not follow and value in items:
-            items.remove(value)
-        self._write_state(state)
-        return state["follows"]
+        with self._state_lock:
+            state = self._state()
+            items = state["follows"][kind]
+            if follow and value not in items:
+                items.append(value)
+            if not follow and value in items:
+                items.remove(value)
+            self._write_state(state)
+            return {key: list(values) for key, values in state["follows"].items()}
 
     def clear_activity(self) -> dict[str, Any]:
-        state = self._state()
-        count = len(state["activity"])
-        state["activity"] = []
-        self._write_state(state)
-        return {"status": "cleared", "entries": count}
+        with self._state_lock:
+            state = self._state()
+            count = len(state["activity"])
+            state["activity"] = []
+            self._write_state(state)
+            return {"status": "cleared", "entries": count}
 
     def _add_activity(self, action: str, book_id: str, title: str) -> None:
-        state = self._state()
-        state["activity"].insert(0, {"action": action, "book_id": book_id, "title": title, "at": _now()})
-        state["activity"] = state["activity"][:100]
-        self._write_state(state)
+        with self._state_lock:
+            state = self._state()
+            state["activity"].insert(0, {"action": action, "book_id": book_id, "title": title, "at": _now()})
+            state["activity"] = state["activity"][:100]
+            self._write_state(state)
 
     def cache_stats(self) -> dict[str, Any]:
         generated_bytes = 0
@@ -449,16 +475,19 @@ class LocalLibrary:
     def reset_local_data(self, confirmation: str) -> dict[str, Any]:
         if confirmation != "DELETE ALL LOCAL DATA":
             raise ValueError("confirmation must be DELETE ALL LOCAL DATA")
-        shutil.rmtree(self.root, ignore_errors=True)
-        self.books_root.mkdir(parents=True, exist_ok=True)
-        self.private_root.mkdir(parents=True, exist_ok=True)
-        self.cache_root.mkdir(parents=True, exist_ok=True)
-        self._write_state(self._default_state())
-        return {"status": "reset", "root": str(self.root)}
+        with self._state_lock:
+            shutil.rmtree(self.root, ignore_errors=True)
+            self.books_root.mkdir(parents=True, exist_ok=True)
+            self.private_root.mkdir(parents=True, exist_ok=True)
+            self.cache_root.mkdir(parents=True, exist_ok=True)
+            self._write_state(self._default_state())
+            return {"status": "reset", "root": str(self.root)}
 
     def dashboard(self) -> dict[str, Any]:
-        books = self.list_books()
+        # One state snapshot serves the complete dashboard. This avoids rereading
+        # the same JSON once per decorated book and keeps a consistent view.
         state = self._state()
+        books = self.list_books(_state_snapshot=state)
         by_id = {book["id"]: book for book in books}
         playlists = []
         for playlist in state["playlists"]:
@@ -470,9 +499,9 @@ class LocalLibrary:
             "books": books,
             "continue_listening": continue_listening,
             "playlists": playlists,
-            "follows": state["follows"],
-            "activity": state["activity"],
-            "preferences": state["preferences"],
+            "follows": {key: list(values) for key, values in state["follows"].items()},
+            "activity": list(state["activity"]),
+            "preferences": dict(state["preferences"]),
             "voice_ready": self.voice_ready(),
             "storage": self.cache_stats(),
         }
