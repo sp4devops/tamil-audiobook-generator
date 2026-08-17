@@ -147,6 +147,15 @@ class LocalLibrary:
         self.text(meta["id"])
         return _read_json(self._book_dir(meta["id"]) / "metadata.json", meta)
 
+    def _migrate_pending_texts(self) -> None:
+        """Run one-time text migrations before taking a dashboard state snapshot."""
+        for item in self.books_root.iterdir():
+            if not item.is_dir():
+                continue
+            meta = _read_json(item / "metadata.json", None)
+            if meta:
+                self._migrate_text_if_needed(meta)
+
     def import_book(
         self,
         source: Path,
@@ -182,7 +191,11 @@ class LocalLibrary:
         return self.get_book(book_id)
 
     def list_books(self, *, _state_snapshot: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        state = _state_snapshot if _state_snapshot is not None else self._state()
+        if _state_snapshot is None:
+            self._migrate_pending_texts()
+            state = self._state()
+        else:
+            state = _state_snapshot
         books = []
         for item in self.books_root.iterdir():
             if not item.is_dir():
@@ -190,7 +203,6 @@ class LocalLibrary:
             meta = _read_json(item / "metadata.json", None)
             if not meta:
                 continue
-            meta = self._migrate_text_if_needed(meta)
             books.append(self._decorate(meta, state=state))
         return sorted(books, key=lambda book: book.get("updated_at", ""), reverse=True)
 
@@ -505,12 +517,9 @@ class LocalLibrary:
             return {"status": "reset", "root": str(self.root)}
 
     def dashboard(self) -> dict[str, Any]:
+        self._migrate_pending_texts()
         state = self._state()
         books = self.list_books(_state_snapshot=state)
-        # A one-time text migration may invalidate progress. Refresh the state
-        # snapshot only when an old book was migrated during this call.
-        if any(int(book.get("text_normalization_version", 0) or 0) < TEXT_NORMALIZATION_VERSION for book in books):
-            state = self._state()
         by_id = {book["id"]: book for book in books}
         playlists = []
         for playlist in state["playlists"]:
