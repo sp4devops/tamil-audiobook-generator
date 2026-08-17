@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from tamil_audiobook.library import LocalLibrary, extract_book_text
+from tamil_audiobook.textnorm import normalize_book_text
 
 
 def make_book(tmp_path: Path, lib: LocalLibrary, name: str = "book"):
@@ -23,6 +24,27 @@ def test_txt_import_library_state_and_playlist(tmp_path: Path):
     assert book["id"] in updated["books"]
     follows = lib.set_follow("authors", "Test Author", True)
     assert "Test Author" in follows["authors"]
+
+
+def test_tamil_visual_order_pdf_damage_is_repaired():
+    # Typical PDF extraction puts the visible left-side vowel glyph before the
+    # consonant. The browser then shows an orphan/dotted sign and TTS receives
+    # the wrong logical order.
+    damaged = "ேநயர்கேள, வணக்கம். ெகாடுத்த ேகாப்பு"
+    repaired = normalize_book_text(damaged)
+    assert repaired.startswith("நேயர்கேள")
+    assert "கொடுத்த" in repaired
+    assert "கோப்பு" in repaired
+    assert "◌" not in repaired
+
+
+def test_existing_import_is_repaired_on_read(tmp_path: Path):
+    lib = LocalLibrary(tmp_path / "library")
+    book = make_book(tmp_path, lib)
+    text_path = lib._book_dir(book["id"]) / "text.txt"
+    text_path.write_text("ேநயர்கேள", encoding="utf-8")
+    assert lib.text(book["id"]) == "நேயர்கேள"
+    assert text_path.read_text(encoding="utf-8") == "நேயர்கேள"
 
 
 def test_playlist_full_crud_and_membership(tmp_path: Path):
@@ -63,13 +85,18 @@ def test_generated_audio_cleanup_and_cache_stats(tmp_path: Path):
     (book_dir / "audiobook.mp3").write_bytes(b"audio" * 100)
     (book_dir / "report.json").write_text("{}", encoding="utf-8")
     (book_dir / "cues.json").write_text("[]", encoding="utf-8")
+    chunks = book_dir / "chunks"
+    chunks.mkdir()
+    (chunks / "chunk_00000.flac").write_bytes(b"chunk")
     lib.update_progress(book["id"], 1, 2)
     stats = lib.cache_stats()
     assert stats["generated_books"] == 1
     assert stats["generated_bytes"] > 0
     result = lib.delete_generated_audio(book["id"])
     assert "audiobook.mp3" in result["removed"]
+    assert "chunks" in result["removed"]
     assert not (book_dir / "audiobook.mp3").exists()
+    assert not chunks.exists()
     assert book["id"] not in lib._state()["progress"]
 
 
@@ -133,6 +160,7 @@ def test_dashboard_defaults_are_local_and_focus_friendly(tmp_path: Path):
     assert dash["preferences"]["focus_minutes"] == 25
     assert dash["preferences"]["eq_preset"] == "flat"
     assert dash["preferences"]["theme"] == "midnight"
+    assert dash["preferences"]["generation_mode"] == "cool"
     assert "storage" in dash
 
 
