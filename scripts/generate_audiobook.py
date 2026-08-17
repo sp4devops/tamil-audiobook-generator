@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tamil_audiobook.engine import synthesize_audiobook
+from tamil_audiobook.engine import DEFAULT_GUIDANCE_SCALE, synthesize_audiobook
 
 
 def main() -> int:
@@ -24,7 +24,7 @@ def main() -> int:
     parser.add_argument("--output-mp3", type=Path)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--num-steps", type=int, default=20)
-    parser.add_argument("--guidance-scale", type=float, default=2.0)
+    parser.add_argument("--guidance-scale", type=float, default=DEFAULT_GUIDANCE_SCALE)
     args = parser.parse_args()
 
     text = args.text_file.read_text(encoding="utf-8")
