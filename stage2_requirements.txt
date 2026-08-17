@@ -1,5 +1,5 @@
-# Stage-2 OmniVoice/MLX runtime and test dependencies
-# Pinned to the exact versions validated on macos-14-arm64 acceptance runs.
+# Stage-2 OmniVoice/MLX runtime, local app, and test dependencies
+# Core voice runtime pins were validated on macos-14-arm64 acceptance runs.
 mlx-audio==0.4.8
 mlx==0.32.0
 mlx-lm==0.31.3
@@ -7,3 +7,9 @@ transformers==5.15.0
 soundfile==0.14.0
 numpy==2.4.6
 pytest==9.1.1
+
+# Local-only application layer pins.
+fastapi==0.141.1
+uvicorn==0.51.0
+python-multipart==0.0.32
+pypdf==6.15.0
