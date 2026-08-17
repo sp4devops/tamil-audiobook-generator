@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import tempfile
 import threading
 import uuid
@@ -9,8 +10,9 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .engine import DEFAULT_GUIDANCE_SCALE, DEFAULT_NUM_STEPS, synthesize_audiobook
+from .engine import DEFAULT_GUIDANCE_SCALE, DEFAULT_NUM_STEPS, estimate_audiobook, synthesize_audiobook
 from .library import LocalLibrary
+from .voice import default_voice_available, resolve_voice
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = PACKAGE_ROOT / "static"
@@ -26,42 +28,70 @@ def _job_update(job_id: str, **fields) -> None:
         _jobs.setdefault(job_id, {}).update(fields)
 
 
+def _voice_status() -> tuple[bool, str]:
+    custom_audio, custom_text = library.voice_reference_paths()
+    if custom_audio.is_file() and custom_text.is_file() and custom_text.read_text(encoding="utf-8").strip():
+        return True, "custom"
+    return default_voice_available(), "accepted-c-default" if default_voice_available() else "missing"
+
+
 def _generate(job_id: str, book_id: str) -> None:
     try:
         book = library.get_book(book_id)
-        reference_audio, reference_text_path = library.voice_reference_paths()
-        if not library.voice_ready():
-            raise RuntimeError("Voice reference is not configured")
+        reference_audio, reference_text, voice_source = resolve_voice(library)
         book_dir = library._book_dir(book_id)
         wav = book_dir / "audiobook.wav"
         mp3 = book_dir / "audiobook.mp3"
         report_path = book_dir / "report.json"
-        _job_update(job_id, status="running", stage="synthesizing")
+
+        def on_progress(payload: dict) -> None:
+            _job_update(job_id, status="running", voice_source=voice_source, **payload)
+
+        _job_update(job_id, status="running", stage="loading_model", percent=1.0, voice_source=voice_source)
         report = synthesize_audiobook(
             text=library.text(book_id),
             reference_audio=reference_audio,
-            reference_text=reference_text_path.read_text(encoding="utf-8").strip(),
+            reference_text=reference_text,
             output_wav=wav,
             output_mp3=mp3,
             num_steps=DEFAULT_NUM_STEPS,
             guidance_scale=DEFAULT_GUIDANCE_SCALE,
             report_path=report_path,
+            progress_callback=on_progress,
         )
         cues = library.build_cues(book_id, report)
         wav.unlink(missing_ok=True)
-        _job_update(job_id, status="completed", stage="ready", book_id=book_id, title=book["title"], audio_seconds=report["audio_seconds"], aggregate_rtf=report["aggregate_rtf"], cues=len(cues))
+        _job_update(
+            job_id,
+            status="completed",
+            stage="ready",
+            percent=100.0,
+            estimated_remaining_seconds=0.0,
+            book_id=book_id,
+            title=book["title"],
+            voice_source=voice_source,
+            audio_seconds=report["audio_seconds"],
+            generation_seconds=report["generation_seconds"],
+            aggregate_rtf=report["aggregate_rtf"],
+            cues=len(cues),
+        )
     except Exception as exc:
         _job_update(job_id, status="failed", stage="failed", error=str(exc))
 
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"status": "ok", "local_only": True, "voice_ready": library.voice_ready()}
+    ready, source = _voice_status()
+    return {"status": "ok", "local_only": True, "voice_ready": ready, "voice_source": source}
 
 
 @app.get("/api/dashboard")
 def dashboard() -> dict:
-    return library.dashboard()
+    payload = library.dashboard()
+    ready, source = _voice_status()
+    payload["voice_ready"] = ready
+    payload["voice_source"] = source
+    return payload
 
 
 @app.get("/api/storage")
@@ -75,7 +105,22 @@ def book_detail(book_id: str) -> dict:
         book = library.get_book(book_id)
         book["text"] = library.text(book_id)
         book["cues"] = library.cues(book_id)
+        report_path = library.report_path(book_id)
+        if report_path.is_file():
+            import json
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            book["audio_seconds"] = float(report.get("audio_seconds", 0.0))
+            book["generation_seconds"] = float(report.get("generation_seconds", 0.0))
+        book["estimate"] = estimate_audiobook(book["text"])
         return book
+    except FileNotFoundError:
+        raise HTTPException(404, "Book not found")
+
+
+@app.get("/api/books/{book_id}/estimate")
+def book_estimate(book_id: str) -> dict:
+    try:
+        return estimate_audiobook(library.text(book_id))
     except FileNotFoundError:
         raise HTTPException(404, "Book not found")
 
@@ -145,12 +190,14 @@ async def save_voice_reference(audio: UploadFile = File(...), transcript: str = 
         if suffix == ".wav":
             library.save_voice_reference(temp_path, transcript)
         else:
-            import subprocess
             converted = temp_path.with_suffix(".converted.wav")
-            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(temp_path), "-ac", "1", "-ar", "24000", str(converted)], check=True)
+            subprocess.run(
+                ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(temp_path), "-ac", "1", "-ar", "24000", str(converted)],
+                check=True,
+            )
             library.save_voice_reference(converted, transcript)
             converted.unlink(missing_ok=True)
-        return {"status": "ok", "voice_ready": library.voice_ready(), "stored_locally": str(target)}
+        return {"status": "ok", "voice_ready": True, "voice_source": "custom", "stored_locally": str(target)}
     except Exception as exc:
         raise HTTPException(400, str(exc))
     finally:
@@ -159,21 +206,39 @@ async def save_voice_reference(audio: UploadFile = File(...), transcript: str = 
 
 @app.delete("/api/voice-reference")
 def delete_voice_reference() -> dict:
-    return library.delete_voice_reference()
+    result = library.delete_voice_reference()
+    result["voice_ready"] = default_voice_available()
+    result["voice_source"] = "accepted-c-default" if default_voice_available() else "missing"
+    return result
 
 
 @app.post("/api/books/{book_id}/generate")
 def generate_book(book_id: str) -> dict:
     try:
-        library.get_book(book_id)
+        book_text = library.text(book_id)
     except FileNotFoundError:
         raise HTTPException(404, "Book not found")
-    if not library.voice_ready():
-        raise HTTPException(409, "Configure the local voice reference first")
+    ready, source = _voice_status()
+    if not ready:
+        raise HTTPException(409, "No voice reference is available")
+    estimate = estimate_audiobook(book_text)
     job_id = uuid.uuid4().hex[:12]
-    _job_update(job_id, status="queued", stage="queued", book_id=book_id)
+    _job_update(
+        job_id,
+        status="queued",
+        stage="queued",
+        book_id=book_id,
+        voice_source=source,
+        percent=0.0,
+        completed_chunks=0,
+        total_chunks=estimate["chunks"],
+        estimated_audio_seconds=estimate["audio_seconds"],
+        estimated_generation_seconds=estimate["generation_seconds"],
+        estimated_remaining_seconds=estimate["generation_seconds"],
+        elapsed_seconds=0.0,
+    )
     threading.Thread(target=_generate, args=(job_id, book_id), daemon=True).start()
-    return {"job_id": job_id, "status": "queued"}
+    return {"job_id": job_id, "status": "queued", "estimate": estimate, "voice_source": source}
 
 
 @app.get("/api/jobs/{job_id}")
