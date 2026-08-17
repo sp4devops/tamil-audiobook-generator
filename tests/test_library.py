@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from tamil_audiobook.library import LocalLibrary, extract_book_text
@@ -40,13 +41,36 @@ def test_valid_tamil_prebase_vowels_are_not_reordered():
     assert normalize_book_text(valid) == valid
 
 
-def test_existing_import_is_repaired_on_read(tmp_path: Path):
+def test_existing_import_migration_repairs_text_and_invalidates_stale_audio(tmp_path: Path):
     lib = LocalLibrary(tmp_path / "library")
     book = make_book(tmp_path, lib)
-    text_path = lib._book_dir(book["id"]) / "text.txt"
+    book_dir = lib._book_dir(book["id"])
+    text_path = book_dir / "text.txt"
+    meta_path = book_dir / "metadata.json"
+
+    # Simulate a pre-normalization-version library entry with generated output
+    # and listening progress derived from malformed PDF text.
+    lib.update_progress(book["id"], 9, 20)
+    (book_dir / "audiobook.mp3").write_bytes(b"audio" * 300)
+    (book_dir / "report.json").write_text("{}", encoding="utf-8")
+    (book_dir / "cues.json").write_text("[]", encoding="utf-8")
+    chunks = book_dir / "chunks"
+    chunks.mkdir()
+    (chunks / "chunk_00000.flac").write_bytes(b"chunk" * 100)
     text_path.write_text("ேநயர்கேள", encoding="utf-8")
-    assert lib.text(book["id"]) == "நேயர்களே"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta.pop("text_normalization_version", None)
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+    dash = lib.dashboard()
+    migrated = next(item for item in dash["books"] if item["id"] == book["id"])
     assert text_path.read_text(encoding="utf-8") == "நேயர்களே"
+    assert migrated["has_audio"] is False
+    assert migrated["progress"]["seconds"] == 0
+    assert not (book_dir / "audiobook.mp3").exists()
+    assert not (book_dir / "report.json").exists()
+    assert not (book_dir / "cues.json").exists()
+    assert not chunks.exists()
 
 
 def test_playlist_full_crud_and_membership(tmp_path: Path):
