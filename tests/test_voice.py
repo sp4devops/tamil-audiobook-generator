@@ -1,10 +1,13 @@
 from pathlib import Path
 
+import pytest
 import soundfile as sf
 
 from tamil_audiobook.library import LocalLibrary
 from tamil_audiobook.voice import (
     DEFAULT_VOICE_PROVENANCE,
+    GENERATED_FALLBACK_LABEL,
+    ORIGINAL_SOURCE_LABEL,
     _decode_default_opus,
     default_voice_available,
     materialize_default_voice,
@@ -12,7 +15,7 @@ from tamil_audiobook.voice import (
 )
 
 
-def test_packaged_default_voice_integrity_and_audio(tmp_path: Path):
+def test_packaged_generated_fallback_integrity_and_audio(tmp_path: Path):
     assert default_voice_available()
     raw = _decode_default_opus()
     assert len(raw) > 8000
@@ -29,16 +32,25 @@ def test_packaged_default_voice_integrity_and_audio(tmp_path: Path):
     assert "தொடர்ந்து" in transcript
 
 
-def test_resolve_voice_uses_default_then_custom_override(tmp_path: Path):
+def test_resolve_voice_requires_original_and_never_silently_falls_back(tmp_path: Path):
     lib = LocalLibrary(tmp_path / "library")
-    audio, transcript, source = resolve_voice(lib)
-    assert source == "accepted-c-default"
-    assert audio.is_file()
-    assert transcript.strip()
 
-    custom = tmp_path / "custom.wav"
-    custom.write_bytes(audio.read_bytes())
-    lib.save_voice_reference(custom, "custom reference words")
-    audio2, transcript2, source2 = resolve_voice(lib)
-    assert source2 == "custom"
-    assert transcript2 == "custom reference words"
+    with pytest.raises(FileNotFoundError, match="Original source voice"):
+        resolve_voice(lib)
+
+    fallback_audio, fallback_text, fallback_source = resolve_voice(lib, allow_generated_fallback=True)
+    assert fallback_source == GENERATED_FALLBACK_LABEL
+    assert fallback_audio.is_file()
+    assert fallback_text.strip()
+
+    # A locally stored source recording always wins over the generated fallback.
+    lib.save_voice_reference(fallback_audio, "original source reference words")
+    audio, transcript, source = resolve_voice(lib)
+    assert source == ORIGINAL_SOURCE_LABEL
+    assert audio.is_file()
+    assert transcript == "original source reference words"
+
+    audio2, transcript2, source2 = resolve_voice(lib, allow_generated_fallback=True)
+    assert source2 == ORIGINAL_SOURCE_LABEL
+    assert audio2 == audio
+    assert transcript2 == transcript
