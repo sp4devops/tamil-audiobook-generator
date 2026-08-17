@@ -27,15 +27,17 @@ def test_txt_import_library_state_and_playlist(tmp_path: Path):
 
 
 def test_tamil_visual_order_pdf_damage_is_repaired():
-    # Typical PDF extraction puts the visible left-side vowel glyph before the
-    # consonant. The browser then shows an orphan/dotted sign and TTS receives
-    # the wrong logical order.
     damaged = "ேநயர்கேள, வணக்கம். ெகாடுத்த ேகாப்பு"
     repaired = normalize_book_text(damaged)
-    assert repaired.startswith("நேயர்கேள")
+    assert repaired.startswith("நேயர்களே")
     assert "கொடுத்த" in repaired
     assert "கோப்பு" in repaired
     assert "◌" not in repaired
+
+
+def test_valid_tamil_prebase_vowels_are_not_reordered():
+    valid = "கேளுங்கள். நேரம் மிகவும் முக்கியம். மேலும் தொடருங்கள்."
+    assert normalize_book_text(valid) == valid
 
 
 def test_existing_import_is_repaired_on_read(tmp_path: Path):
@@ -43,8 +45,8 @@ def test_existing_import_is_repaired_on_read(tmp_path: Path):
     book = make_book(tmp_path, lib)
     text_path = lib._book_dir(book["id"]) / "text.txt"
     text_path.write_text("ேநயர்கேள", encoding="utf-8")
-    assert lib.text(book["id"]) == "நேயர்கேள"
-    assert text_path.read_text(encoding="utf-8") == "நேயர்கேள"
+    assert lib.text(book["id"]) == "நேயர்களே"
+    assert text_path.read_text(encoding="utf-8") == "நேயர்களே"
 
 
 def test_playlist_full_crud_and_membership(tmp_path: Path):
