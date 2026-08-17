@@ -8,6 +8,7 @@ on:
       - 'README.md'
       - 'tamil_audiobook/**'
       - 'scripts/generate_audiobook.py'
+      - 'scripts/audiobook.py'
       - 'tests/**'
       - 'stage2_requirements.txt'
       - '.github/workflows/stage2-audiobook-engine.yml'
@@ -43,7 +44,7 @@ jobs:
           test "$(arch)" = 'arm64'
           printf 'runner_memory_bytes=%s\n' "$(sysctl -n hw.memsize)"
 
-      - name: Install runtime and test dependencies
+      - name: Install runtime and app dependencies
         shell: bash
         run: |
           set -euo pipefail
@@ -51,11 +52,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r stage2_requirements.txt
 
-      - name: Run unit tests
+      - name: Run complete unit test suite
         shell: bash
         run: |
           set -euo pipefail
-          python -m pytest -q tests/test_engine.py tests/test_benchmark_contract.py
+          python -m pytest -q tests
+          python scripts/audiobook.py --library "$RUNNER_TEMP/listenleaf-library" list
+          python - <<'PY'
+          from tamil_audiobook.app import app
+          routes = {route.path for route in app.routes}
+          required = {'/', '/api/dashboard', '/api/books/import', '/api/voice-reference'}
+          missing = required - routes
+          if missing:
+              raise SystemExit(f'Missing app routes: {sorted(missing)}')
+          print('app_route_smoke=PASS')
+          PY
 
       - name: Recover human-accepted C reference transiently
         shell: bash
