@@ -15,6 +15,8 @@ from pypdf import PdfReader
 from .engine import chunk_text
 from .textnorm import normalize_book_text
 
+TEXT_NORMALIZATION_VERSION = 2
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -69,9 +71,6 @@ class LocalLibrary:
         self.private_root = self.root / "private"
         self.cache_root = self.root / "cache"
         self.state_path = self.root / "state.json"
-        # FastAPI can execute sync endpoints concurrently. Protect complete
-        # read-modify-write state transactions so progress, preferences and
-        # playlists cannot overwrite one another.
         self._state_lock = threading.RLock()
         self.books_root.mkdir(parents=True, exist_ok=True)
         self.private_root.mkdir(parents=True, exist_ok=True)
@@ -120,7 +119,6 @@ class LocalLibrary:
             _atomic_json(self.state_path, state)
 
     def preferences(self) -> dict[str, Any]:
-        """Return a detached snapshot of persisted preferences."""
         return dict(self._state()["preferences"])
 
     def _book_dir(self, book_id: str) -> Path:
@@ -128,6 +126,26 @@ class LocalLibrary:
         if path.parent != self.books_root.resolve():
             raise ValueError("invalid book id")
         return path
+
+    @staticmethod
+    def _remove_generated_files(book_dir: Path) -> list[str]:
+        removed: list[str] = []
+        for name in ("audiobook.mp3", "audiobook.wav", "report.json", "cues.json"):
+            path = book_dir / name
+            if path.exists():
+                path.unlink()
+                removed.append(name)
+        chunks = book_dir / "chunks"
+        if chunks.exists():
+            shutil.rmtree(chunks)
+            removed.append("chunks")
+        return removed
+
+    def _migrate_text_if_needed(self, meta: dict[str, Any]) -> dict[str, Any]:
+        if int(meta.get("text_normalization_version", 0) or 0) >= TEXT_NORMALIZATION_VERSION:
+            return meta
+        self.text(meta["id"])
+        return _read_json(self._book_dir(meta["id"]) / "metadata.json", meta)
 
     def import_book(
         self,
@@ -155,6 +173,7 @@ class LocalLibrary:
             "source_format": source.suffix.lower().lstrip("."),
             "characters": len(text),
             "words": len(text.split()),
+            "text_normalization_version": TEXT_NORMALIZATION_VERSION,
             "created_at": now,
             "updated_at": now,
         }
@@ -171,6 +190,7 @@ class LocalLibrary:
             meta = _read_json(item / "metadata.json", None)
             if not meta:
                 continue
+            meta = self._migrate_text_if_needed(meta)
             books.append(self._decorate(meta, state=state))
         return sorted(books, key=lambda book: book.get("updated_at", ""), reverse=True)
 
@@ -179,6 +199,7 @@ class LocalLibrary:
         meta = _read_json(book_dir / "metadata.json", None)
         if not meta:
             raise FileNotFoundError(book_id)
+        meta = self._migrate_text_if_needed(meta)
         return self._decorate(meta)
 
     def update_book(self, book_id: str, *, title: str | None = None, author: str | None = None, series: str | None = None) -> dict[str, Any]:
@@ -226,18 +247,27 @@ class LocalLibrary:
         return result
 
     def text(self, book_id: str) -> str:
-        path = self._book_dir(book_id) / "text.txt"
+        book_dir = self._book_dir(book_id)
+        path = book_dir / "text.txt"
         raw = path.read_text(encoding="utf-8")
         repaired = normalize_book_text(raw)
-        if repaired != raw:
+        meta_path = book_dir / "metadata.json"
+        meta = _read_json(meta_path, None)
+        changed = repaired != raw
+        if changed:
             path.write_text(repaired, encoding="utf-8")
-            meta_path = self._book_dir(book_id) / "metadata.json"
-            meta = _read_json(meta_path, None)
-            if meta:
-                meta["characters"] = len(repaired)
-                meta["words"] = len(repaired.split())
+            self._remove_generated_files(book_dir)
+            with self._state_lock:
+                state = self._state()
+                state["progress"].pop(book_id, None)
+                self._write_state(state)
+        if meta and (changed or int(meta.get("text_normalization_version", 0) or 0) < TEXT_NORMALIZATION_VERSION):
+            meta["characters"] = len(repaired)
+            meta["words"] = len(repaired.split())
+            meta["text_normalization_version"] = TEXT_NORMALIZATION_VERSION
+            if changed:
                 meta["updated_at"] = _now()
-                _atomic_json(meta_path, meta)
+            _atomic_json(meta_path, meta)
         return repaired
 
     def audio_path(self, book_id: str) -> Path:
@@ -275,16 +305,7 @@ class LocalLibrary:
         with self._state_lock:
             self.get_book(book_id)
             book_dir = self._book_dir(book_id)
-            removed = []
-            for name in ("audiobook.mp3", "audiobook.wav", "report.json", "cues.json"):
-                path = book_dir / name
-                if path.exists():
-                    path.unlink()
-                    removed.append(name)
-            chunks = book_dir / "chunks"
-            if chunks.exists():
-                shutil.rmtree(chunks)
-                removed.append("chunks")
+            removed = self._remove_generated_files(book_dir)
             state = self._state()
             state["progress"].pop(book_id, None)
             self._write_state(state)
@@ -484,10 +505,12 @@ class LocalLibrary:
             return {"status": "reset", "root": str(self.root)}
 
     def dashboard(self) -> dict[str, Any]:
-        # One state snapshot serves the complete dashboard. This avoids rereading
-        # the same JSON once per decorated book and keeps a consistent view.
         state = self._state()
         books = self.list_books(_state_snapshot=state)
+        # A one-time text migration may invalidate progress. Refresh the state
+        # snapshot only when an old book was migrated during this call.
+        if any(int(book.get("text_normalization_version", 0) or 0) < TEXT_NORMALIZATION_VERSION for book in books):
+            state = self._state()
         by_id = {book["id"]: book for book in books}
         playlists = []
         for playlist in state["playlists"]:
