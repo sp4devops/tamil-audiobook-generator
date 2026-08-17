@@ -18,7 +18,7 @@ def test_packaged_default_voice_integrity_and_audio(tmp_path: Path):
     assert len(raw) > 8000
     assert raw.startswith(b"OggS")
     assert "8.52-second bilingual excerpt" in DEFAULT_VOICE_PROVENANCE
-    assert "accepted C" in DEFAULT_VOICE_PROVENANCE
+    assert "extracted from the Final 11-minute accepted-C audiobook MP3" in DEFAULT_VOICE_PROVENANCE
 
     wav, transcript = materialize_default_voice(tmp_path / "cache")
     info = sf.info(wav)
