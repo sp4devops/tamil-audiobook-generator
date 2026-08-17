@@ -421,8 +421,7 @@ def synthesize_audiobook(
                 if model is None or ref_tokens is None:
                     raise RuntimeError("voice model was not loaded for a missing chunk")
                 started = time.perf_counter()
-                result = None
-                for generated in model.generate(
+                results = list(model.generate(
                     text=chunk.text,
                     language=chunk.language,
                     ref_tokens=ref_tokens,
@@ -430,16 +429,13 @@ def synthesize_audiobook(
                     duration_s=chunk.estimated_seconds,
                     num_steps=num_steps,
                     guidance_scale=guidance_scale,
-                ):
-                    # OmniVoice may yield progressive results. Keep only the newest
-                    # result instead of retaining every yielded tensor/object.
-                    result = generated
+                ))
                 elapsed = time.perf_counter() - started
-                if result is None:
+                if not results:
                     raise RuntimeError(f"no audio returned for chunk {index}")
+                result = results[-1]
                 audio = _to_numpy(result.audio)
                 current_rate = int(getattr(result, "sample_rate", 0) or getattr(model, "sample_rate", 0))
-                result = None
                 if checkpoint is not None:
                     checkpoint.parent.mkdir(parents=True, exist_ok=True)
                     sf.write(checkpoint, audio, current_rate, format="FLAC", subtype="PCM_16")
