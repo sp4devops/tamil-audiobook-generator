@@ -1,5 +1,9 @@
 # Stage-2 OmniVoice/MLX runtime and test dependencies
-mlx-audio>=0.4.3
-soundfile>=0.12,<1
-numpy>=1.26,<3
-pytest>=8,<10
+# Pinned to the exact versions validated on macos-14-arm64 acceptance runs.
+mlx-audio==0.4.8
+mlx==0.32.0
+mlx-lm==0.31.3
+transformers==5.15.0
+soundfile==0.14.0
+numpy==2.4.6
+pytest==9.1.1
