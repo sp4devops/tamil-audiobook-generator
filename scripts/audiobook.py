@@ -12,6 +12,22 @@ if str(REPO_ROOT) not in sys.path:
 
 from tamil_audiobook.engine import DEFAULT_GUIDANCE_SCALE, DEFAULT_NUM_STEPS, synthesize_audiobook
 from tamil_audiobook.library import LocalLibrary
+from tamil_audiobook.textnorm import normalize_book_text
+
+
+# Keep normalization at the library read boundary for the normal CLI/UI launch
+# path. This makes existing imported books, future imports, estimates, cue
+# building and TTS all consume the same repaired Unicode without rewriting the
+# user's source PDF. The raw source copy remains untouched.
+_RAW_LIBRARY_TEXT = LocalLibrary.text
+
+
+def _normalized_library_text(self: LocalLibrary, book_id: str) -> str:
+    return normalize_book_text(_RAW_LIBRARY_TEXT(self, book_id))
+
+
+if LocalLibrary.text is not _normalized_library_text:
+    LocalLibrary.text = _normalized_library_text
 
 
 def main() -> int:
@@ -86,6 +102,7 @@ def main() -> int:
             num_steps=DEFAULT_NUM_STEPS,
             guidance_scale=DEFAULT_GUIDANCE_SCALE,
             report_path=book_dir / "report.json",
+            checkpoint_dir=book_dir / "chunks",
         )
         lib.build_cues(args.book_id, report)
         (book_dir / "audiobook.wav").unlink(missing_ok=True)
