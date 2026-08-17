@@ -12,6 +12,7 @@ from typing import Any
 from pypdf import PdfReader
 
 from .engine import chunk_text
+from .textnorm import normalize_book_text
 
 
 def _now() -> str:
@@ -44,10 +45,10 @@ def _atomic_json(path: Path, payload: Any) -> None:
 def extract_book_text(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix in {".txt", ".md"}:
-        return path.read_text(encoding="utf-8", errors="replace").strip()
+        return normalize_book_text(path.read_text(encoding="utf-8", errors="replace"))
     if suffix == ".pdf":
         reader = PdfReader(str(path))
-        pages = [(page.extract_text() or "").strip() for page in reader.pages]
+        pages = [normalize_book_text(page.extract_text() or "") for page in reader.pages]
         return "\n\n".join(page for page in pages if page).strip()
     raise ValueError("Supported book formats are PDF, TXT, and Markdown")
 
@@ -93,6 +94,7 @@ class LocalLibrary:
                 "repeat_mode": "off",
                 "shuffle": False,
                 "skip_seconds": 15,
+                "generation_mode": "cool",
             },
         }
 
@@ -210,7 +212,19 @@ class LocalLibrary:
         return result
 
     def text(self, book_id: str) -> str:
-        return (self._book_dir(book_id) / "text.txt").read_text(encoding="utf-8")
+        path = self._book_dir(book_id) / "text.txt"
+        raw = path.read_text(encoding="utf-8")
+        repaired = normalize_book_text(raw)
+        if repaired != raw:
+            path.write_text(repaired, encoding="utf-8")
+            meta_path = self._book_dir(book_id) / "metadata.json"
+            meta = _read_json(meta_path, None)
+            if meta:
+                meta["characters"] = len(repaired)
+                meta["words"] = len(repaired.split())
+                meta["updated_at"] = _now()
+                _atomic_json(meta_path, meta)
+        return repaired
 
     def audio_path(self, book_id: str) -> Path:
         return self._book_dir(book_id) / "audiobook.mp3"
@@ -252,6 +266,10 @@ class LocalLibrary:
             if path.exists():
                 path.unlink()
                 removed.append(name)
+        chunks = book_dir / "chunks"
+        if chunks.exists():
+            shutil.rmtree(chunks)
+            removed.append("chunks")
         state = self._state()
         state["progress"].pop(book_id, None)
         self._write_state(state)
@@ -372,19 +390,20 @@ class LocalLibrary:
 
     def remove_from_playlist(self, playlist_id: str, book_id: str) -> dict[str, Any]:
         playlist = self.get_playlist(playlist_id)
-        books = [item for item in playlist["books"] if item != book_id]
-        return self.update_playlist(playlist_id, books=books)
+        return self.update_playlist(playlist_id, books=[item for item in playlist["books"] if item != book_id])
 
-    def set_follow(self, kind: str, value: str, follow: bool) -> dict[str, Any]:
+    def set_follow(self, kind: str, value: str, follow: bool = True) -> dict[str, Any]:
         if kind not in {"authors", "series"}:
-            raise ValueError("follow kind must be authors or series")
+            raise ValueError("kind must be authors or series")
         value = value.strip()
+        if not value:
+            raise ValueError("follow value is required")
         state = self._state()
-        values = state["follows"][kind]
-        if follow and value and value not in values:
-            values.append(value)
-        if not follow and value in values:
-            values.remove(value)
+        items = state["follows"][kind]
+        if follow and value not in items:
+            items.append(value)
+        if not follow and value in items:
+            items.remove(value)
         self._write_state(state)
         return state["follows"]
 
@@ -395,6 +414,12 @@ class LocalLibrary:
         self._write_state(state)
         return {"status": "cleared", "entries": count}
 
+    def _add_activity(self, action: str, book_id: str, title: str) -> None:
+        state = self._state()
+        state["activity"].insert(0, {"action": action, "book_id": book_id, "title": title, "at": _now()})
+        state["activity"] = state["activity"][:100]
+        self._write_state(state)
+
     def cache_stats(self) -> dict[str, Any]:
         generated_bytes = 0
         generated_books = 0
@@ -402,13 +427,12 @@ class LocalLibrary:
             if not item.is_dir():
                 continue
             audio = item / "audiobook.mp3"
-            report = item / "report.json"
-            cues = item / "cues.json"
             if audio.exists():
                 generated_books += 1
-            for path in (audio, report, cues, item / "audiobook.wav"):
-                if path.exists():
-                    generated_bytes += path.stat().st_size
+                generated_bytes += audio.stat().st_size
+            chunks = item / "chunks"
+            if chunks.exists():
+                generated_bytes += _dir_size(chunks)
         return {
             "app_cache_bytes": _dir_size(self.cache_root),
             "generated_bytes": generated_bytes,
@@ -424,7 +448,7 @@ class LocalLibrary:
 
     def reset_local_data(self, confirmation: str) -> dict[str, Any]:
         if confirmation != "DELETE ALL LOCAL DATA":
-            raise ValueError("confirmation phrase does not match")
+            raise ValueError("confirmation must be DELETE ALL LOCAL DATA")
         shutil.rmtree(self.root, ignore_errors=True)
         self.books_root.mkdir(parents=True, exist_ok=True)
         self.private_root.mkdir(parents=True, exist_ok=True)
@@ -433,23 +457,22 @@ class LocalLibrary:
         return {"status": "reset", "root": str(self.root)}
 
     def dashboard(self) -> dict[str, Any]:
-        state = self._state()
         books = self.list_books()
+        state = self._state()
+        by_id = {book["id"]: book for book in books}
+        playlists = []
+        for playlist in state["playlists"]:
+            item = dict(playlist)
+            item["book_details"] = [by_id[book_id] for book_id in playlist["books"] if book_id in by_id]
+            playlists.append(item)
         continue_listening = [book for book in books if book["progress"].get("seconds", 0) > 0]
-        continue_listening.sort(key=lambda b: b["progress"].get("updated_at", ""), reverse=True)
         return {
             "books": books,
-            "continue_listening": continue_listening[:8],
-            "playlists": state["playlists"],
+            "continue_listening": continue_listening,
+            "playlists": playlists,
             "follows": state["follows"],
-            "activity": state["activity"][:30],
+            "activity": state["activity"],
             "preferences": state["preferences"],
             "voice_ready": self.voice_ready(),
             "storage": self.cache_stats(),
         }
-
-    def _add_activity(self, action: str, book_id: str, title: str) -> None:
-        state = self._state()
-        state["activity"].insert(0, {"action": action, "book_id": book_id, "title": title, "at": _now()})
-        state["activity"] = state["activity"][:100]
-        self._write_state(state)
