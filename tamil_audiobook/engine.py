@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -158,6 +160,94 @@ def _write_mp3(wav_path: Path, mp3_path: Path) -> None:
     )
 
 
+def _checkpoint_key(
+    *,
+    text: str,
+    reference_audio: Path,
+    reference_text: str,
+    num_steps: int,
+    guidance_scale: float,
+    crossfade_ms: int,
+    target_chars: int,
+    max_chars: int,
+) -> str:
+    digest = hashlib.sha256()
+    digest.update(text.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(reference_text.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(reference_audio.read_bytes())
+    digest.update(
+        f"{MODEL_ID}|{num_steps}|{guidance_scale}|{crossfade_ms}|{target_chars}|{max_chars}".encode("utf-8")
+    )
+    return digest.hexdigest()
+
+
+def _prepare_checkpoint_dir(checkpoint_dir: Path, key: str, total_chunks: int) -> int:
+    manifest_path = checkpoint_dir / "manifest.json"
+    current = None
+    try:
+        current = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    if not current or current.get("key") != key or int(current.get("total_chunks", -1)) != total_chunks:
+        shutil.rmtree(checkpoint_dir, ignore_errors=True)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(
+            json.dumps({"key": key, "total_chunks": total_chunks}, indent=2), encoding="utf-8"
+        )
+    else:
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    contiguous = 0
+    for index in range(total_chunks):
+        path = checkpoint_dir / f"chunk_{index:05d}.flac"
+        if not path.is_file() or path.stat().st_size < 256:
+            break
+        try:
+            info = sf.info(path)
+            if info.frames <= 0 or info.samplerate <= 0 or info.channels != 1:
+                break
+        except Exception:
+            break
+        contiguous += 1
+    return contiguous
+
+
+def _write_stream_part(
+    writer: sf.SoundFile,
+    pending_tail: np.ndarray | None,
+    audio: np.ndarray,
+    fade_samples: int,
+) -> np.ndarray:
+    """Append one chunk using the same 55 ms overlap while retaining only a tiny tail in memory."""
+    audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if pending_tail is None:
+        if fade_samples > 0 and len(audio) > fade_samples:
+            writer.write(audio[:-fade_samples])
+            return audio[-fade_samples:].copy()
+        return audio.copy()
+
+    n = min(fade_samples, len(pending_tail), len(audio)) if fade_samples > 0 else 0
+    if n <= 0:
+        writer.write(pending_tail)
+        if fade_samples > 0 and len(audio) > fade_samples:
+            writer.write(audio[:-fade_samples])
+            return audio[-fade_samples:].copy()
+        return audio.copy()
+
+    if len(pending_tail) > n:
+        writer.write(pending_tail[:-n])
+    fade_out = np.linspace(1.0, 0.0, n, endpoint=False, dtype=np.float32)
+    fade_in = 1.0 - fade_out
+    writer.write(pending_tail[-n:] * fade_out + audio[:n] * fade_in)
+    remainder = audio[n:]
+    if len(remainder) > fade_samples:
+        writer.write(remainder[:-fade_samples])
+        return remainder[-fade_samples:].copy()
+    return remainder.copy()
+
+
 def synthesize_audiobook(
     *,
     text: str,
@@ -172,6 +262,7 @@ def synthesize_audiobook(
     max_chars: int = DEFAULT_MAX_CHARS,
     report_path: Path | None = None,
     progress_callback: Callable[[dict], None] | None = None,
+    checkpoint_dir: Path | None = None,
 ) -> dict:
     if not reference_audio.is_file():
         raise FileNotFoundError(reference_audio)
@@ -183,94 +274,186 @@ def synthesize_audiobook(
     if not chunks:
         raise ValueError("input text is empty")
 
+    total_started = time.perf_counter()
+
     def progress(**payload) -> None:
         if progress_callback is not None:
+            payload.setdefault("elapsed_seconds", round(time.perf_counter() - total_started, 1))
             progress_callback(payload)
 
-    progress(stage="loading_model", completed_chunks=0, total_chunks=len(chunks), percent=1.0)
+    cached_prefix = 0
+    if checkpoint_dir is not None:
+        key = _checkpoint_key(
+            text=text,
+            reference_audio=reference_audio,
+            reference_text=reference_text,
+            num_steps=num_steps,
+            guidance_scale=guidance_scale,
+            crossfade_ms=crossfade_ms,
+            target_chars=target_chars,
+            max_chars=max_chars,
+        )
+        cached_prefix = _prepare_checkpoint_dir(checkpoint_dir, key, len(chunks))
 
-    from mlx_audio.tts.models.omnivoice.utils import create_voice_clone_prompt
-    from mlx_audio.tts.utils import load_model
+    missing_chunks = []
+    for index in range(len(chunks)):
+        checkpoint = checkpoint_dir / f"chunk_{index:05d}.flac" if checkpoint_dir is not None else None
+        if checkpoint is None or not checkpoint.is_file() or checkpoint.stat().st_size < 256:
+            missing_chunks.append(index)
 
-    load_started = time.perf_counter()
-    model = load_model(MODEL_ID)
-    model_load_seconds = time.perf_counter() - load_started
-    progress(stage="encoding_voice", completed_chunks=0, total_chunks=len(chunks), percent=5.0, model_load_seconds=round(model_load_seconds, 2))
+    progress(
+        stage="loading_model" if missing_chunks else "assembling_cached",
+        completed_chunks=cached_prefix,
+        playable_chunks=cached_prefix,
+        total_chunks=len(chunks),
+        percent=1.0 if missing_chunks else 95.0,
+        resumed_chunks=cached_prefix,
+    )
 
-    prompt_started = time.perf_counter()
-    ref_tokens = create_voice_clone_prompt(str(reference_audio), tokenizer=model.audio_tokenizer, ref_text=reference_text)
-    prompt_encode_seconds = time.perf_counter() - prompt_started
-    if getattr(ref_tokens, "size", 0) == 0:
-        raise RuntimeError("empty clone-reference tokens")
+    model = None
+    ref_tokens = None
+    model_load_seconds = 0.0
+    prompt_encode_seconds = 0.0
+    if missing_chunks:
+        from mlx_audio.tts.models.omnivoice.utils import create_voice_clone_prompt
+        from mlx_audio.tts.utils import load_model
 
-    generated_parts: list[np.ndarray] = []
+        load_started = time.perf_counter()
+        model = load_model(MODEL_ID)
+        model_load_seconds = time.perf_counter() - load_started
+        progress(
+            stage="encoding_voice",
+            completed_chunks=cached_prefix,
+            playable_chunks=cached_prefix,
+            total_chunks=len(chunks),
+            percent=5.0,
+            model_load_seconds=round(model_load_seconds, 2),
+            resumed_chunks=cached_prefix,
+        )
+
+        prompt_started = time.perf_counter()
+        ref_tokens = create_voice_clone_prompt(
+            str(reference_audio), tokenizer=model.audio_tokenizer, ref_text=reference_text
+        )
+        prompt_encode_seconds = time.perf_counter() - prompt_started
+        if getattr(ref_tokens, "size", 0) == 0:
+            raise RuntimeError("empty clone-reference tokens")
+
+    output_wav.parent.mkdir(parents=True, exist_ok=True)
+    output_wav.unlink(missing_ok=True)
     chunk_reports: list[dict] = []
     sample_rate: int | None = None
+    writer: sf.SoundFile | None = None
+    pending_tail: np.ndarray | None = None
     generation_started = time.perf_counter()
+    generated_new_count = 0
+    generated_new_seconds = 0.0
 
-    for index, chunk in enumerate(chunks):
-        started = time.perf_counter()
-        results = list(
-            model.generate(
-                text=chunk.text,
-                language=chunk.language,
-                ref_tokens=ref_tokens,
-                ref_text=reference_text,
-                duration_s=chunk.estimated_seconds,
-                num_steps=num_steps,
-                guidance_scale=guidance_scale,
+    try:
+        for index, chunk in enumerate(chunks):
+            checkpoint = checkpoint_dir / f"chunk_{index:05d}.flac" if checkpoint_dir is not None else None
+            cached = bool(checkpoint is not None and checkpoint.is_file() and checkpoint.stat().st_size >= 256)
+            if cached:
+                audio, current_rate = sf.read(checkpoint, dtype="float32", always_2d=False)
+                audio = _to_numpy(audio)
+                current_rate = int(current_rate)
+                elapsed = 0.0
+            else:
+                if model is None or ref_tokens is None:
+                    raise RuntimeError("voice model was not loaded for a missing chunk")
+                started = time.perf_counter()
+                results = list(
+                    model.generate(
+                        text=chunk.text,
+                        language=chunk.language,
+                        ref_tokens=ref_tokens,
+                        ref_text=reference_text,
+                        duration_s=chunk.estimated_seconds,
+                        num_steps=num_steps,
+                        guidance_scale=guidance_scale,
+                    )
+                )
+                elapsed = time.perf_counter() - started
+                if not results:
+                    raise RuntimeError(f"no audio returned for chunk {index}")
+                result = results[-1]
+                audio = _to_numpy(result.audio)
+                current_rate = int(getattr(result, "sample_rate", 0) or getattr(model, "sample_rate", 0))
+                if checkpoint is not None:
+                    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+                    sf.write(checkpoint, audio, current_rate, format="FLAC", subtype="PCM_16")
+                generated_new_count += 1
+                generated_new_seconds += elapsed
+
+            if current_rate <= 0 or not len(audio) or not np.isfinite(audio).all():
+                raise RuntimeError(f"invalid audio for chunk {index}")
+            if sample_rate is None:
+                sample_rate = current_rate
+                writer = sf.SoundFile(
+                    output_wav,
+                    mode="w",
+                    samplerate=sample_rate,
+                    channels=1,
+                    subtype="PCM_16",
+                    format="WAV",
+                )
+            elif sample_rate != current_rate:
+                raise RuntimeError("sample rate changed between chunks")
+            assert writer is not None
+
+            fade_samples = max(0, int(sample_rate * crossfade_ms / 1000))
+            pending_tail = _write_stream_part(writer, pending_tail, audio, fade_samples)
+
+            seconds = len(audio) / current_rate
+            chunk_reports.append(
+                {
+                    "index": index,
+                    "language": chunk.language,
+                    "chars": len(chunk.text),
+                    "generation_seconds": round(elapsed, 3),
+                    "audio_seconds": round(seconds, 3),
+                    "rtf": round(elapsed / seconds, 4) if elapsed else 0.0,
+                    "cached": cached,
+                }
             )
-        )
-        elapsed = time.perf_counter() - started
-        if not results:
-            raise RuntimeError(f"no audio returned for chunk {index}")
-        result = results[-1]
-        audio = _to_numpy(result.audio)
-        current_rate = int(getattr(result, "sample_rate", 0) or getattr(model, "sample_rate", 0))
-        if current_rate <= 0 or not len(audio) or not np.isfinite(audio).all():
-            raise RuntimeError(f"invalid audio for chunk {index}")
-        if sample_rate is None:
-            sample_rate = current_rate
-        elif sample_rate != current_rate:
-            raise RuntimeError("sample rate changed between chunks")
-        generated_parts.append(audio)
-        seconds = len(audio) / current_rate
-        chunk_reports.append(
-            {
-                "index": index,
-                "language": chunk.language,
-                "chars": len(chunk.text),
-                "generation_seconds": round(elapsed, 3),
-                "audio_seconds": round(seconds, 3),
-                "rtf": round(elapsed / seconds, 4),
-            }
-        )
-        completed = index + 1
-        elapsed_generation = time.perf_counter() - generation_started
-        average_chunk = elapsed_generation / completed
-        remaining = max(0.0, average_chunk * (len(chunks) - completed))
-        percent = 5.0 + 90.0 * completed / len(chunks)
-        progress(
-            stage="synthesizing",
-            completed_chunks=completed,
-            total_chunks=len(chunks),
-            percent=round(percent, 1),
-            elapsed_seconds=round(elapsed_generation, 1),
-            estimated_remaining_seconds=round(remaining, 1),
-            generated_audio_seconds=round(sum(item["audio_seconds"] for item in chunk_reports), 1),
-        )
+            completed = index + 1
+            remaining_missing = sum(1 for item in missing_chunks if item > index)
+            average_new = generated_new_seconds / generated_new_count if generated_new_count else 0.0
+            remaining = max(0.0, average_new * remaining_missing)
+            percent = 5.0 + 90.0 * completed / len(chunks)
+            progress(
+                stage="synthesizing" if remaining_missing or not cached else "assembling_cached",
+                completed_chunks=completed,
+                playable_chunks=completed,
+                total_chunks=len(chunks),
+                percent=round(percent, 1),
+                estimated_remaining_seconds=round(remaining, 1) if generated_new_count else None,
+                generated_audio_seconds=round(sum(item["audio_seconds"] for item in chunk_reports), 1),
+                resumed_chunks=sum(1 for item in chunk_reports if item["cached"]),
+            )
+
+        assert writer is not None and sample_rate is not None
+        if pending_tail is not None and len(pending_tail):
+            writer.write(pending_tail)
+        total_frames = writer.tell()
+    finally:
+        if writer is not None:
+            writer.close()
 
     generation_seconds = time.perf_counter() - generation_started
-    assert sample_rate is not None
-    progress(stage="exporting", completed_chunks=len(chunks), total_chunks=len(chunks), percent=97.0, elapsed_seconds=round(generation_seconds, 1), estimated_remaining_seconds=3.0)
-    joined = _crossfade_join(generated_parts, sample_rate, crossfade_ms)
-    output_wav.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(output_wav, joined, sample_rate)
+    progress(
+        stage="exporting",
+        completed_chunks=len(chunks),
+        playable_chunks=len(chunks),
+        total_chunks=len(chunks),
+        percent=97.0,
+        estimated_remaining_seconds=3.0,
+    )
     if output_mp3 is not None:
         output_mp3.parent.mkdir(parents=True, exist_ok=True)
         _write_mp3(output_wav, output_mp3)
 
-    audio_seconds = len(joined) / sample_rate
+    audio_seconds = total_frames / sample_rate
     report = {
         "status": "PASS",
         "engine": "OmniVoice-MLX",
@@ -279,6 +462,7 @@ def synthesize_audiobook(
         "guidance_scale": guidance_scale,
         "crossfade_ms": crossfade_ms,
         "chunks": len(chunks),
+        "resumed_chunks": sum(1 for item in chunk_reports if item["cached"]),
         "model_load_seconds": round(model_load_seconds, 3),
         "prompt_encode_seconds_one_time": round(prompt_encode_seconds, 3),
         "generation_seconds": round(generation_seconds, 3),
@@ -289,5 +473,13 @@ def synthesize_audiobook(
     if report_path is not None:
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    progress(stage="ready", completed_chunks=len(chunks), total_chunks=len(chunks), percent=100.0, elapsed_seconds=round(generation_seconds, 1), estimated_remaining_seconds=0.0, audio_seconds=round(audio_seconds, 1))
+    progress(
+        stage="ready",
+        completed_chunks=len(chunks),
+        playable_chunks=len(chunks),
+        total_chunks=len(chunks),
+        percent=100.0,
+        estimated_remaining_seconds=0.0,
+        audio_seconds=round(audio_seconds, 1),
+    )
     return report
