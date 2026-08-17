@@ -2,7 +2,19 @@ from __future__ import annotations
 
 import numpy as np
 
-from tamil_audiobook.engine import _crossfade_join, chunk_text, detect_language, estimate_duration_seconds
+from tamil_audiobook.engine import (
+    DEFAULT_GUIDANCE_SCALE,
+    DEFAULT_NUM_STEPS,
+    _crossfade_join,
+    chunk_text,
+    detect_language,
+    estimate_duration_seconds,
+)
+
+
+def test_accepted_voice_defaults_are_locked():
+    assert DEFAULT_NUM_STEPS == 20
+    assert DEFAULT_GUIDANCE_SCALE == 2.5
 
 
 def test_detect_language_modes():
