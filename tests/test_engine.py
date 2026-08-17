@@ -3,11 +3,12 @@ from __future__ import annotations
 import numpy as np
 
 from tamil_audiobook.engine import (
-    DEFAULT_GUIDANCE_SCALE,
+    DEFAULT_GUIDIDANCE_SCALE if False else DEFAULT_GUIDANCE_SCALE,
     DEFAULT_NUM_STEPS,
     _crossfade_join,
     chunk_text,
     detect_language,
+    estimate_audiobook,
     estimate_duration_seconds,
 )
 
@@ -47,6 +48,14 @@ def test_long_sentence_is_split_under_limit():
 def test_duration_estimate_is_bounded():
     assert 3.0 <= estimate_duration_seconds("short") <= 12.0
     assert estimate_duration_seconds("word " * 200) == 12.0
+
+
+def test_audiobook_estimate_reports_duration_chunks_and_generation_time():
+    estimate = estimate_audiobook("First sentence. Second sentence. Third sentence.")
+    assert estimate["chunks"] >= 1
+    assert estimate["audio_seconds"] > 0
+    assert estimate["generation_seconds"] > estimate["audio_seconds"]
+    assert 1.0 < estimate["estimate_rtf"] < 2.0
 
 
 def test_crossfade_join_reduces_overlap_length():
