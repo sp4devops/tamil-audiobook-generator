@@ -9,6 +9,8 @@ on:
       - 'tamil_audiobook/**'
       - 'scripts/generate_audiobook.py'
       - 'scripts/audiobook.py'
+      - 'scripts/setup_macos.sh'
+      - 'scripts/provision_original_voice.sh'
       - 'tests/**'
       - 'stage2_requirements.txt'
       - '.github/workflows/stage2-audiobook-engine.yml'
@@ -55,6 +57,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          bash -n scripts/setup_macos.sh scripts/provision_original_voice.sh
+          python scripts/audiobook.py --help | grep -q 'provision-voice'
           node --check tamil_audiobook/static/app.js
           node --check tamil_audiobook/static/progressive.js
           python -m pytest -q tests
@@ -72,6 +76,7 @@ jobs:
               raise SystemExit(f'Missing app routes: {sorted(missing)}')
           print('app_route_smoke=PASS')
           print('progressive_route_smoke=PASS')
+          print('provisioning_script_syntax=PASS')
           PY
 
       - name: Materialize final 11-minute accepted-C default voice
@@ -183,7 +188,7 @@ jobs:
           rm -f outputs/audiobook_engine/resource_usage.txt outputs/audiobook_engine/resumed.wav outputs/audiobook_engine/resume_report.json
 
       - name: Upload safe audiobook engine artifact
-        if: always()
+        if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: stage2-audiobook-engine-acceptance
