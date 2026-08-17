@@ -3,8 +3,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
+
+# Long-form generation on an 8 GB M2 can otherwise keep Metal saturated for
+# hours. Cool mode inserts 5-second idle gaps between newly generated chunks.
+# Users can still explicitly override this environment variable to balanced or
+# fast before launching.
+os.environ.setdefault("LISTENLEAF_GENERATION_MODE", "cool")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -12,22 +19,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from tamil_audiobook.engine import DEFAULT_GUIDANCE_SCALE, DEFAULT_NUM_STEPS, synthesize_audiobook
 from tamil_audiobook.library import LocalLibrary
-from tamil_audiobook.textnorm import normalize_book_text
-
-
-# Keep normalization at the library read boundary for the normal CLI/UI launch
-# path. This makes existing imported books, future imports, estimates, cue
-# building and TTS all consume the same repaired Unicode without rewriting the
-# user's source PDF. The raw source copy remains untouched.
-_RAW_LIBRARY_TEXT = LocalLibrary.text
-
-
-def _normalized_library_text(self: LocalLibrary, book_id: str) -> str:
-    return normalize_book_text(_RAW_LIBRARY_TEXT(self, book_id))
-
-
-if LocalLibrary.text is not _normalized_library_text:
-    LocalLibrary.text = _normalized_library_text
 
 
 def main() -> int:
@@ -112,7 +103,6 @@ def main() -> int:
         return 0
 
     if args.command == "serve":
-        import os
         import threading
         import webbrowser
         import uvicorn
