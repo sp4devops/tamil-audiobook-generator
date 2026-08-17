@@ -78,12 +78,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/accepted-c-default" outputs/audiobook_engine
+          mkdir -p "$RUNNER_TEMP/accepted-c-default" outputs/audiobook_engine/checkpoints
           python - <<'PY'
           import os
           from pathlib import Path
           from tamil_audiobook.voice import DEFAULT_VOICE_PROVENANCE, materialize_default_voice
-
           root = Path(os.environ['RUNNER_TEMP']) / 'accepted-c-default'
           audio, transcript = materialize_default_voice(root)
           text_path = root / 'reference.txt'
@@ -98,12 +97,10 @@ jobs:
           print('default_voice_materialized=PASS')
           PY
 
-      - name: Run real audiobook engine with packaged accepted C default
+      - name: Run real resumable audiobook engine with accepted C default
         shell: bash
         run: |
           set -euo pipefail
-          test -s "$DEFAULT_VOICE_WAV"
-          test -s "$DEFAULT_VOICE_TEXT"
           /usr/bin/time -l python scripts/generate_audiobook.py \
             --text-file tests/data/sample_audiobook.txt \
             --reference "$DEFAULT_VOICE_WAV" \
@@ -111,9 +108,38 @@ jobs:
             --output-wav outputs/audiobook_engine/sample_audiobook.wav \
             --output-mp3 outputs/audiobook_engine/sample_audiobook.mp3 \
             --report outputs/audiobook_engine/engine_report.json \
+            --checkpoint-dir outputs/audiobook_engine/checkpoints \
             --num-steps 20 \
             --guidance-scale 2.5 \
             2> >(tee outputs/audiobook_engine/resource_usage.txt >&2)
+
+      - name: Verify checkpoints resume without re-synthesis
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/generate_audiobook.py \
+            --text-file tests/data/sample_audiobook.txt \
+            --reference "$DEFAULT_VOICE_WAV" \
+            --reference-text-file "$DEFAULT_VOICE_TEXT" \
+            --output-wav outputs/audiobook_engine/resumed.wav \
+            --report outputs/audiobook_engine/resume_report.json \
+            --checkpoint-dir outputs/audiobook_engine/checkpoints \
+            --num-steps 20 \
+            --guidance-scale 2.5
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          first = json.loads(Path('outputs/audiobook_engine/engine_report.json').read_text())
+          resumed = json.loads(Path('outputs/audiobook_engine/resume_report.json').read_text())
+          chunks = int(first['chunks'])
+          files = list(Path('outputs/audiobook_engine/checkpoints').glob('chunk_*.flac'))
+          if len(files) != chunks:
+              raise SystemExit(f'checkpoint count mismatch: {len(files)} != {chunks}')
+          if int(resumed.get('resumed_chunks', 0)) != chunks:
+              raise SystemExit('resume did not reuse every generated chunk')
+          print(f'checkpoint_chunks={chunks}')
+          print('checkpoint_resume=PASS')
+          PY
 
       - name: Enforce engine acceptance gates
         shell: bash
@@ -124,36 +150,26 @@ jobs:
           import re
           from pathlib import Path
           from tamil_audiobook.voice import DEFAULT_VOICE_PROVENANCE
-
           out = Path('outputs/audiobook_engine')
           report = json.loads((out / 'engine_report.json').read_text(encoding='utf-8'))
           usage = (out / 'resource_usage.txt').read_text(encoding='utf-8', errors='replace')
           match = re.search(r'(?m)^\s*(\d+)\s+maximum resident set size\s*$', usage)
           if not match:
               raise SystemExit('Could not parse maximum resident set size')
-          rss = int(match.group(1))
-          rss_gib = rss / (1024 ** 3)
+          rss = int(match.group(1)); rss_gib = rss / (1024 ** 3)
           report['maximum_resident_set_bytes'] = rss
           report['maximum_resident_set_gib'] = round(rss_gib, 3)
           report['speed_gate_pass'] = report['aggregate_rtf'] <= 2.0
           report['memory_gate_pass'] = rss_gib <= 3.0
           report['mp3_export_pass'] = (out / 'sample_audiobook.mp3').stat().st_size > 1000
-          report['accepted_voice_config'] = (
-              report['num_steps'] == 20 and abs(report['guidance_scale'] - 2.5) < 1e-9
-          )
+          report['accepted_voice_config'] = report['num_steps'] == 20 and abs(report['guidance_scale'] - 2.5) < 1e-9
           report['default_voice_provenance'] = DEFAULT_VOICE_PROVENANCE
-          report['acceptance_status'] = 'PASS' if all((
-              report['speed_gate_pass'], report['memory_gate_pass'],
-              report['mp3_export_pass'], report['accepted_voice_config']
-          )) else 'FAIL'
-          (out / 'engine_report.json').write_text(
-              json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8'
-          )
+          report['acceptance_status'] = 'PASS' if all((report['speed_gate_pass'], report['memory_gate_pass'], report['mp3_export_pass'], report['accepted_voice_config'])) else 'FAIL'
+          (out / 'engine_report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
           print('engine_audio_seconds=' + str(report['audio_seconds']))
           print('engine_rtf=' + str(report['aggregate_rtf']))
           print('engine_peak_rss_gib=' + str(report['maximum_resident_set_gib']))
           print('engine_guidance_scale=' + str(report['guidance_scale']))
-          print('default_voice_provenance=' + report['default_voice_provenance'])
           print('engine_acceptance=' + report['acceptance_status'])
           if report['acceptance_status'] != 'PASS':
               raise SystemExit('Stage 2 audiobook engine failed acceptance gates')
@@ -163,8 +179,8 @@ jobs:
         if: always()
         shell: bash
         run: |
-          rm -rf "$RUNNER_TEMP/accepted-c-default"
-          rm -f outputs/audiobook_engine/resource_usage.txt
+          rm -rf "$RUNNER_TEMP/accepted-c-default" outputs/audiobook_engine/checkpoints
+          rm -f outputs/audiobook_engine/resource_usage.txt outputs/audiobook_engine/resumed.wav outputs/audiobook_engine/resume_report.json
 
       - name: Upload safe audiobook engine artifact
         if: always()
