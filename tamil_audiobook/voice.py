@@ -7,11 +7,11 @@ from pathlib import Path
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 DEFAULT_VOICE_ROOT = PACKAGE_ROOT / "default_voice"
-DEFAULT_VOICE_GLOB = "final_11min_accepted_c.opus.b64.part*"
-DEFAULT_VOICE_OPUS_SHA256 = "51afd8c66adfac4906f36080e327331bfc2b16638a95f605452f1f1c2b162802"
-DEFAULT_VOICE_PROVENANCE = "Final 11-minute accepted-C audiobook MP3"
-# Exact text spoken in the selected 8.52-second bilingual segment of the final accepted audiobook.
-DEFAULT_VOICE_TEXT = "The transition should remain natural and consistent. கதை தொடர்ந்து செல்லும் போது ஒவ்வொரு வாக்கியத்திலும் உச்சரிப்பு தெளிவாக இருக்க வேண்டும்."
+DEFAULT_VOICE_GLOB = "accepted_c_default.flac.b64.part*"
+DEFAULT_VOICE_FLAC_SHA256 = "2db888fae059ef6769df8425217a906f1df7099b941e1050eeab32a115faa719"
+DEFAULT_VOICE_PROVENANCE = "Lossless Stage-1 generated mixed reference used for accepted candidate C"
+# Transcript for the safe generated Stage-1 mixed listening reference.
+DEFAULT_VOICE_TEXT = "வணக்கம், this is my voice. இன்று Kubernetes சரியாக வேலை செய்கிறது."
 
 
 def _parts() -> list[Path]:
@@ -20,33 +20,31 @@ def _parts() -> list[Path]:
 
 def default_voice_available() -> bool:
     parts = _parts()
-    return len(parts) == 4 and all(part.is_file() and part.stat().st_size > 1000 for part in parts)
+    return len(parts) == 3 and all(part.is_file() and part.stat().st_size > 1000 for part in parts)
 
 
-def _decode_default_opus() -> bytes:
+def _decode_default_flac() -> bytes:
     if not default_voice_available():
-        raise FileNotFoundError("packaged final accepted-C default voice is missing")
+        raise FileNotFoundError("packaged accepted-C default voice is missing")
     encoded = "".join(part.read_text(encoding="utf-8").strip() for part in _parts())
     raw = base64.b64decode(encoded, validate=True)
-    if hashlib.sha256(raw).hexdigest() != DEFAULT_VOICE_OPUS_SHA256:
-        raise RuntimeError("packaged final accepted-C voice checksum mismatch")
+    if hashlib.sha256(raw).hexdigest() != DEFAULT_VOICE_FLAC_SHA256:
+        raise RuntimeError("packaged accepted-C default voice checksum mismatch")
     return raw
 
 
 def materialize_default_voice(cache_root: Path) -> tuple[Path, str]:
     cache_root.mkdir(parents=True, exist_ok=True)
-    opus_path = cache_root / "final_11min_accepted_c.opus"
-    wav_path = cache_root / "final_11min_accepted_c.wav"
-    raw = _decode_default_opus()
-    if not opus_path.is_file() or hashlib.sha256(opus_path.read_bytes()).hexdigest() != DEFAULT_VOICE_OPUS_SHA256:
-        opus_path.write_bytes(raw)
+    flac_path = cache_root / "accepted_c_default.flac"
+    wav_path = cache_root / "accepted_c_default.wav"
+    raw = _decode_default_flac()
+    if not flac_path.is_file() or hashlib.sha256(flac_path.read_bytes()).hexdigest() != DEFAULT_VOICE_FLAC_SHA256:
+        flac_path.write_bytes(raw)
         wav_path.unlink(missing_ok=True)
     if not wav_path.is_file() or wav_path.stat().st_size < 1000:
+        # The packaged FLAC was verified sample-for-sample against the exact 24 kHz mono test reference.
         subprocess.run(
-            [
-                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                "-i", str(opus_path), "-ac", "1", "-ar", "24000", str(wav_path),
-            ],
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(flac_path), str(wav_path)],
             check=True,
         )
     return wav_path, DEFAULT_VOICE_TEXT
