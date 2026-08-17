@@ -122,7 +122,9 @@ async function refresh() {
   $('#followSeries').innerHTML = d.follows.series.length ? d.follows.series.map(x => `<button class="chip" data-unfollow-series="${esc(x)}">${esc(x)} ×</button>`).join('') : '<span class="muted">Follow a series from a book.</span>';
   $('#activityFeed').innerHTML = d.activity.length ? d.activity.map(x => `<div class="activity-item"><strong>${esc(x.title)}</strong><span>${esc(x.action)}</span></div>`).join('') : '<span class="muted">No local activity.</span>';
   $('#playlistGrid').innerHTML = d.playlists.length ? d.playlists.map(p => `<article class="playlist-card" data-playlist="${p.id}"><strong>${esc(p.name)}</strong><p class="muted">${p.books.length} books</p><span class="muted">Edit playlist →</span></article>`).join('') : '<span class="muted">No playlists yet.</span>';
-  $('#voiceState').textContent = d.voice_source === 'custom' ? '✓ Custom local voice override is active.' : d.voice_source === 'accepted-c-default' ? '✓ Accepted-C generated mixed voice is active by default.' : 'No voice reference is available.';
+  $('#voiceState').textContent = d.voice_source === 'original-source-local'
+    ? '✓ Original source voice is configured locally.'
+    : 'Original source voice is required before audiobook generation.';
   $('#storageState').textContent = `Library ${bytes(d.storage.library_bytes)} · Generated audio ${bytes(d.storage.generated_bytes)} · App cache ${bytes(d.storage.app_cache_bytes)}`;
   applyPreferences(d.preferences);
   wireDynamic();
@@ -322,7 +324,7 @@ audio.onended = async () => {
 };
 
 function generationStage(stage) {
-  return ({ queued: 'Queued', loading_model: 'Loading voice model', encoding_voice: 'Preparing accepted voice', synthesizing: 'Generating audio', exporting: 'Exporting MP3', ready: 'Ready' })[stage] || stage || 'Working';
+  return ({ queued: 'Queued', loading_model: 'Loading voice model', encoding_voice: 'Preparing original voice', synthesizing: 'Generating audio', cooling: 'Cooling Mac', exporting: 'Exporting MP3', ready: 'Ready' })[stage] || stage || 'Working';
 }
 function showGenerationProgress(job) {
   $('#generationProgress').classList.remove('hidden');
@@ -609,10 +611,16 @@ $('#saveVoice').onclick = async () => {
   const file = $('#voiceReference').files[0], transcript = $('#voiceTranscript').value;
   if (!file || !transcript.trim()) { $('#voiceState').textContent = 'Choose reference audio and enter its exact transcript.'; return; }
   const fd = new FormData(); fd.append('audio', file); fd.append('transcript', transcript);
-  await api('/api/voice-reference', { method: 'POST', body: fd }); $('#voiceState').textContent = '✓ Custom voice override saved locally.'; await refresh();
+  try {
+    await api('/api/voice-reference', { method: 'POST', body: fd });
+    $('#voiceState').textContent = '✓ Original source voice saved and normalized locally.';
+    await refresh();
+  } catch (error) {
+    $('#voiceState').textContent = error.message;
+  }
 };
 $('#deleteVoice').onclick = async () => {
-  if (!(await confirmAction('Return to accepted-C default voice?', 'Your custom local override will be removed. The built-in tested voice remains available.', 'Use default'))) return;
+  if (!(await confirmAction('Remove local voice reference?', 'Audiobook generation will be disabled until you configure an original source voice again.', 'Remove voice'))) return;
   await api('/api/voice-reference', { method: 'DELETE' }); await refresh();
 };
 $('#clearCache').onclick = async () => { await api('/api/cache', { method: 'DELETE' }); await refresh(); };
@@ -620,7 +628,7 @@ $('#clearProgress').onclick = async () => { if (await confirmAction('Clear all l
 const clearActivity = async () => { await api('/api/activity', { method: 'DELETE' }); await refresh(); };
 $('#clearActivity').onclick = clearActivity; $('#clearAllActivity').onclick = clearActivity;
 $('#resetAllData').onclick = async () => {
-  if (!(await confirmAction('Delete all local library data?', 'Imported books, audio, playlists, progress and custom voice data will be deleted. The packaged accepted-C default voice remains.', 'Delete all local data'))) return;
+  if (!(await confirmAction('Delete all local library data?', 'Imported books, audio, playlists, progress and the locally stored voice reference will be deleted. Generation will require the original source voice again.', 'Delete all local data'))) return;
   await api('/api/reset', json('POST', { confirmation: 'DELETE ALL LOCAL DATA' })); state.currentBook = null; audio.pause(); $('#player').classList.add('hidden'); $('#settingsDialog').close(); await refresh(); switchView('home');
 };
 
