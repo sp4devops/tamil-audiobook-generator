@@ -2,6 +2,12 @@
 
 Stage 2 of the local Tamil voice-cloning project.
 
+## Status: COMPLETE
+
+Stage 2 is technically complete and the production voice configuration has passed the human quality gate.
+
+Human listening selected **identity candidate C** at approximately **95% speaker match** with natural flow preserved. The same configuration then passed both the production regression and a sustained 11+ minute audiobook test on Apple Silicon.
+
 ## Goal
 
 Build a lightweight audiobook engine for Apple Silicon that preserves the accepted speaker identity while making long-form Tamil + English/Tanglish generation practical.
@@ -16,11 +22,7 @@ Build a lightweight audiobook engine for Apple Silicon that preserves the accept
 - Runtime memory ceiling: **3 GiB RSS**.
 - The **human quality gate** is authoritative: no engine is accepted solely from automated metrics or speed.
 
-## Accepted voice configuration
-
-Human listening selected **identity candidate C** at approximately **95% speaker match** with natural flow preserved.
-
-The accepted production configuration is now locked to:
+## Accepted production voice configuration
 
 - Engine/model: OmniVoice through MLX-Audio, `mlx-community/OmniVoice-bf16`.
 - Reference: accepted Stage-1 mixed Tamil/English listening reference, recovered transiently and never shipped in artifacts.
@@ -44,33 +46,55 @@ Current production behavior:
 - 55 ms crossfade stitching between generated chunks.
 - WAV output and optional MP3 export through local FFmpeg.
 - JSON runtime report with per-chunk and aggregate RTF.
-- Unit-tested text chunking, language selection, duration bounds, and crossfade logic.
+- Unit-tested text chunking, language selection, duration bounds, crossfade logic, and locked accepted voice defaults.
 - Exact validated Apple-Silicon Python package versions pinned in `stage2_requirements.txt`.
+- One-command local Apple-Silicon setup in `scripts/setup_macos.sh`.
 
 ## Apple Silicon acceptance results
 
 On the standard GitHub `macos-14-arm64` runner with 7 GiB physical RAM:
 
-- Earlier mixed 60-second benchmark at 20 steps: **RTF 1.3664**, max RSS **1.223 GiB**.
-- Tamil-only sustained benchmark at 20 steps: **RTF 1.5299**, max RSS **1.171 GiB**, zero swaps.
-- Production engine using the human-accepted C voice configuration: **96.6 s finished audio in 130.347 s synthesis**, **RTF 1.3494**, **max RSS 1.116 GiB**, zero swaps, WAV/MP3 PASS.
-- This equals roughly **81 seconds of synthesis per finished minute**, comfortably inside the 120-second hard target.
+### Accepted-C production regression
 
-Relevant successful runs:
+Run **31990035829**:
+
+- Finished audio: **96.6 s**.
+- Generation time: **130.347 s**.
+- Aggregate **RTF 1.3494**.
+- Maximum RSS: **1.116 GiB**.
+- Swaps: **0**.
+- WAV export: PASS.
+- MP3 export: PASS.
+- Accepted voice configuration check: PASS.
+
+### Final sustained audiobook gate
+
+Run **31990064057**:
+
+- Finished audio: **678.99 s** (~11 min 19 s).
+- Generation time: **907.888 s**.
+- Aggregate **RTF 1.3371**.
+- Equivalent generation time: approximately **80.2 seconds per finished audio minute**.
+- Chunks: **63**.
+- Maximum RSS: **1.037 GiB**.
+- Swaps: **0**.
+- Synthesis steps: **20**.
+- Guidance scale: **2.5**.
+- MP3 export: PASS.
+- Private reference cleanup: PASS.
+- Final sustained acceptance: **PASS**.
+
+The sustained result remains comfortably inside both hard limits: **RTF <= 2.0** and **RSS <= 3 GiB**.
+
+## Relevant successful runs
 
 - `stage2-omnivoice-tamil-sustained` run **31978886925**.
 - Identity guidance sweep run **31980480116**, where candidate C was selected by human listening at approximately 95% speaker match.
-- Exact accepted-C production regression run **31990035829**: PASS.
+- Accepted-C production regression run **31990035829**.
+- Final sustained audiobook acceptance run **31990064057**.
 
-## Final sustained gate
+## Completion statement
 
-The final technical gate is `stage2-audiobook-10min`, which runs the real production engine for roughly ten minutes of finished bilingual audiobook audio using the same human-accepted C configuration. It enforces:
+Stage 2 has met its defined acceptance criteria: human-approved speaker identity and naturalness, one consistent bilingual voice path, local/open-source operation, sustained audiobook throughput below the two-minutes-per-minute ceiling, and memory use well below 3 GiB RSS on Apple Silicon.
 
-- finished audio >= 540 seconds,
-- aggregate RTF <= 2.0,
-- RSS <= 3 GiB,
-- 20 steps and guidance 2.5,
-- successful MP3 export,
-- cleanup of transient reference material.
-
-Stage 2 should only be declared technically complete after this sustained gate passes. The user-approved ~95% speaker identity remains the human quality baseline.
+The engine is ready for local audiobook generation on the target Mac.
