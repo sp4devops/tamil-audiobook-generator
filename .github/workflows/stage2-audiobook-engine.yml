@@ -74,29 +74,34 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/accepted-c-default" outputs/audiobook_engine
           python - <<'PY'
+          import os
           from pathlib import Path
           from tamil_audiobook.voice import DEFAULT_VOICE_PROVENANCE, materialize_default_voice
 
-          root = Path(__import__('os').environ['RUNNER_TEMP']) / 'accepted-c-default'
+          root = Path(os.environ['RUNNER_TEMP']) / 'accepted-c-default'
           audio, transcript = materialize_default_voice(root)
           text_path = root / 'reference.txt'
           text_path.write_text(transcript, encoding='utf-8')
-          if DEFAULT_VOICE_PROVENANCE != 'Final 11-minute accepted-C audiobook MP3':
-              raise SystemExit('Unexpected default voice provenance')
+          expected = 'extracted from the Final 11-minute accepted-C audiobook MP3'
+          if expected not in DEFAULT_VOICE_PROVENANCE:
+              raise SystemExit('Unexpected default voice provenance: ' + DEFAULT_VOICE_PROVENANCE)
+          with Path(os.environ['GITHUB_ENV']).open('a', encoding='utf-8') as handle:
+              handle.write(f'DEFAULT_VOICE_WAV={audio}\n')
+              handle.write(f'DEFAULT_VOICE_TEXT={text_path}\n')
           print('default_voice_provenance=' + DEFAULT_VOICE_PROVENANCE)
           print('default_voice_materialized=PASS')
           PY
-          test -s "$RUNNER_TEMP/accepted-c-default/final_11min_accepted_c.wav"
-          test -s "$RUNNER_TEMP/accepted-c-default/reference.txt"
 
       - name: Run real audiobook engine with packaged accepted C default
         shell: bash
         run: |
           set -euo pipefail
+          test -s "$DEFAULT_VOICE_WAV"
+          test -s "$DEFAULT_VOICE_TEXT"
           /usr/bin/time -l python scripts/generate_audiobook.py \
             --text-file tests/data/sample_audiobook.txt \
-            --reference "$RUNNER_TEMP/accepted-c-default/final_11min_accepted_c.wav" \
-            --reference-text-file "$RUNNER_TEMP/accepted-c-default/reference.txt" \
+            --reference "$DEFAULT_VOICE_WAV" \
+            --reference-text-file "$DEFAULT_VOICE_TEXT" \
             --output-wav outputs/audiobook_engine/sample_audiobook.wav \
             --output-mp3 outputs/audiobook_engine/sample_audiobook.mp3 \
             --report outputs/audiobook_engine/engine_report.json \
@@ -112,6 +117,7 @@ jobs:
           import json
           import re
           from pathlib import Path
+          from tamil_audiobook.voice import DEFAULT_VOICE_PROVENANCE
 
           out = Path('outputs/audiobook_engine')
           report = json.loads((out / 'engine_report.json').read_text(encoding='utf-8'))
@@ -129,7 +135,7 @@ jobs:
           report['accepted_voice_config'] = (
               report['num_steps'] == 20 and abs(report['guidance_scale'] - 2.5) < 1e-9
           )
-          report['default_voice_provenance'] = 'Final 11-minute accepted-C audiobook MP3'
+          report['default_voice_provenance'] = DEFAULT_VOICE_PROVENANCE
           report['acceptance_status'] = 'PASS' if all((
               report['speed_gate_pass'], report['memory_gate_pass'],
               report['mp3_export_pass'], report['accepted_voice_config']
