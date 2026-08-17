@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import os
@@ -207,7 +208,10 @@ def _checkpoint_key(
     digest.update(b"\0")
     digest.update(reference_text.encode("utf-8"))
     digest.update(b"\0")
-    digest.update(reference_audio.read_bytes())
+    # Stream the reference into the digest instead of materializing the full file.
+    with reference_audio.open("rb") as handle:
+        while block := handle.read(1024 * 1024):
+            digest.update(block)
     # Generation mode is deliberately excluded: thermal pacing changes wall time,
     # never audio content, so checkpoints remain reusable when switching modes.
     digest.update(
@@ -281,6 +285,17 @@ def _write_stream_part(
     return remainder.copy()
 
 
+def _release_mlx_memory() -> None:
+    """Release unused MLX cache after a complete synthesis session."""
+    gc.collect()
+    try:
+        import mlx.core as mx
+        mx.clear_cache()
+    except Exception:
+        # Cleanup must never turn a successful audiobook into a failed job.
+        pass
+
+
 def synthesize_audiobook(
     *,
     text: str,
@@ -332,11 +347,12 @@ def synthesize_audiobook(
         )
         cached_prefix = _prepare_checkpoint_dir(checkpoint_dir, key, len(chunks))
 
-    missing_chunks = []
+    missing_chunks: list[int] = []
     for index in range(len(chunks)):
         checkpoint = checkpoint_dir / f"chunk_{index:05d}.flac" if checkpoint_dir is not None else None
         if checkpoint is None or not checkpoint.is_file() or checkpoint.stat().st_size < 256:
             missing_chunks.append(index)
+    missing_set = set(missing_chunks)
 
     progress(
         stage="loading_model" if missing_chunks else "assembling_cached",
@@ -385,43 +401,51 @@ def synthesize_audiobook(
     generation_started = time.perf_counter()
     generated_new_count = 0
     generated_new_seconds = 0.0
+    generated_audio_seconds_total = 0.0
+    resumed_count = 0
+    remaining_missing_count = len(missing_chunks)
     thermal_idle_seconds = 0.0
 
     try:
         for index, chunk in enumerate(chunks):
             checkpoint = checkpoint_dir / f"chunk_{index:05d}.flac" if checkpoint_dir is not None else None
-            cached = bool(checkpoint is not None and checkpoint.is_file() and checkpoint.stat().st_size >= 256)
+            cached = index not in missing_set
             if cached:
+                assert checkpoint is not None
                 audio, current_rate = sf.read(checkpoint, dtype="float32", always_2d=False)
                 audio = _to_numpy(audio)
                 current_rate = int(current_rate)
                 elapsed = 0.0
+                resumed_count += 1
             else:
                 if model is None or ref_tokens is None:
                     raise RuntimeError("voice model was not loaded for a missing chunk")
                 started = time.perf_counter()
-                results = list(
-                    model.generate(
-                        text=chunk.text,
-                        language=chunk.language,
-                        ref_tokens=ref_tokens,
-                        ref_text=reference_text,
-                        duration_s=chunk.estimated_seconds,
-                        num_steps=num_steps,
-                        guidance_scale=guidance_scale,
-                    )
-                )
+                result = None
+                for generated in model.generate(
+                    text=chunk.text,
+                    language=chunk.language,
+                    ref_tokens=ref_tokens,
+                    ref_text=reference_text,
+                    duration_s=chunk.estimated_seconds,
+                    num_steps=num_steps,
+                    guidance_scale=guidance_scale,
+                ):
+                    # OmniVoice may yield progressive results. Keep only the newest
+                    # result instead of retaining every yielded tensor/object.
+                    result = generated
                 elapsed = time.perf_counter() - started
-                if not results:
+                if result is None:
                     raise RuntimeError(f"no audio returned for chunk {index}")
-                result = results[-1]
                 audio = _to_numpy(result.audio)
                 current_rate = int(getattr(result, "sample_rate", 0) or getattr(model, "sample_rate", 0))
+                result = None
                 if checkpoint is not None:
                     checkpoint.parent.mkdir(parents=True, exist_ok=True)
                     sf.write(checkpoint, audio, current_rate, format="FLAC", subtype="PCM_16")
                 generated_new_count += 1
                 generated_new_seconds += elapsed
+                remaining_missing_count -= 1
 
             if current_rate <= 0 or not len(audio) or not np.isfinite(audio).all():
                 raise RuntimeError(f"invalid audio for chunk {index}")
@@ -443,6 +467,7 @@ def synthesize_audiobook(
             pending_tail = _write_stream_part(writer, pending_tail, audio, fade_samples)
 
             seconds = len(audio) / current_rate
+            generated_audio_seconds_total += seconds
             chunk_reports.append(
                 {
                     "index": index,
@@ -455,25 +480,24 @@ def synthesize_audiobook(
                 }
             )
             completed = index + 1
-            remaining_missing = sum(1 for item in missing_chunks if item > index)
             average_new = generated_new_seconds / generated_new_count if generated_new_count else 0.0
-            remaining = max(0.0, (average_new + pause_seconds) * remaining_missing)
+            remaining = max(0.0, (average_new + pause_seconds) * remaining_missing_count)
             percent = 5.0 + 90.0 * completed / len(chunks)
             progress(
-                stage="synthesizing" if remaining_missing or not cached else "assembling_cached",
+                stage="synthesizing" if remaining_missing_count or not cached else "assembling_cached",
                 completed_chunks=completed,
                 playable_chunks=completed,
                 total_chunks=len(chunks),
                 percent=round(percent, 1),
                 estimated_remaining_seconds=round(remaining, 1) if generated_new_count else None,
-                generated_audio_seconds=round(sum(item["audio_seconds"] for item in chunk_reports), 1),
-                resumed_chunks=sum(1 for item in chunk_reports if item["cached"]),
+                generated_audio_seconds=round(generated_audio_seconds_total, 1),
+                resumed_chunks=resumed_count,
                 thermal_idle_seconds=round(thermal_idle_seconds, 1),
             )
 
             # Give Apple Silicon a predictable idle window between expensive Metal
-            # calls. Skip cached chunks and the final chunk so resume stays fast.
-            if not cached and pause_seconds > 0 and remaining_missing > 0:
+            # calls. Skip cached chunks and the final missing chunk so resume stays fast.
+            if not cached and pause_seconds > 0 and remaining_missing_count > 0:
                 progress(
                     stage="cooling",
                     completed_chunks=completed,
@@ -481,8 +505,8 @@ def synthesize_audiobook(
                     total_chunks=len(chunks),
                     percent=round(percent, 1),
                     estimated_remaining_seconds=round(remaining, 1),
-                    generated_audio_seconds=round(sum(item["audio_seconds"] for item in chunk_reports), 1),
-                    resumed_chunks=sum(1 for item in chunk_reports if item["cached"]),
+                    generated_audio_seconds=round(generated_audio_seconds_total, 1),
+                    resumed_chunks=resumed_count,
                     cooling_seconds=pause_seconds,
                     thermal_idle_seconds=round(thermal_idle_seconds, 1),
                 )
@@ -523,7 +547,7 @@ def synthesize_audiobook(
         "thermal_pause_seconds": pause_seconds,
         "thermal_idle_seconds": round(thermal_idle_seconds, 3),
         "chunks": len(chunks),
-        "resumed_chunks": sum(1 for item in chunk_reports if item["cached"]),
+        "resumed_chunks": resumed_count,
         "model_load_seconds": round(model_load_seconds, 3),
         "prompt_encode_seconds_one_time": round(prompt_encode_seconds, 3),
         "generation_seconds": round(generation_seconds, 3),
@@ -534,6 +558,13 @@ def synthesize_audiobook(
     if report_path is not None:
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # Drop the model/token references before clearing MLX's free-buffer cache so
+    # the long-lived FastAPI process gives memory back between audiobook jobs.
+    model = None
+    ref_tokens = None
+    _release_mlx_memory()
+
     progress(
         stage="ready",
         completed_chunks=len(chunks),
