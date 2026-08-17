@@ -23,6 +23,7 @@ def main() -> int:
     parser.add_argument("--output-wav", type=Path, required=True)
     parser.add_argument("--output-mp3", type=Path)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--checkpoint-dir", type=Path, help="Persist generated chunks here so interrupted long books can resume")
     parser.add_argument("--num-steps", type=int, default=20)
     parser.add_argument("--guidance-scale", type=float, default=DEFAULT_GUIDANCE_SCALE)
     args = parser.parse_args()
@@ -38,6 +39,7 @@ def main() -> int:
         num_steps=args.num_steps,
         guidance_scale=args.guidance_scale,
         report_path=args.report,
+        checkpoint_dir=args.checkpoint_dir,
     )
     print(json.dumps({
         "status": report["status"],
@@ -46,6 +48,7 @@ def main() -> int:
         "aggregate_rtf": report["aggregate_rtf"],
         "guidance_scale": report["guidance_scale"],
         "chunks": report["chunks"],
+        "resumed_chunks": report.get("resumed_chunks", 0),
     }, separators=(",", ":")))
     return 0
 
