@@ -19,7 +19,8 @@ def test_packaged_default_voice_checksum_and_audio(tmp_path: Path):
 
     raw = _decode_default_opus()
     assert hashlib.sha256(raw).hexdigest() == DEFAULT_VOICE_OPUS_SHA256
-    assert DEFAULT_VOICE_PROVENANCE == "Final 11-minute accepted-C audiobook MP3"
+    assert "8.52-second bilingual excerpt" in DEFAULT_VOICE_PROVENANCE
+    assert "accepted C" in DEFAULT_VOICE_PROVENANCE
 
     wav, transcript = materialize_default_voice(tmp_path / "cache")
     info = sf.info(wav)
