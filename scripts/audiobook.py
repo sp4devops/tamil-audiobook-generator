@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -19,6 +20,30 @@ if str(REPO_ROOT) not in sys.path:
 
 from tamil_audiobook.engine import DEFAULT_GUIDANCE_SCALE, DEFAULT_NUM_STEPS, synthesize_audiobook
 from tamil_audiobook.library import LocalLibrary
+
+
+def _provision_original_voice(lib: LocalLibrary, *, quiet: bool = False) -> bool:
+    if lib.voice_ready():
+        return True
+    script = REPO_ROOT / "scripts" / "provision_original_voice.sh"
+    if not script.is_file():
+        if not quiet:
+            print("Original-voice provisioner is missing from this checkout.", file=sys.stderr)
+        return False
+    if not quiet:
+        print("Original source voice is not configured; starting secure one-time provisioning…")
+    result = subprocess.run(
+        ["bash", str(script), "--library", str(lib.root)],
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    ready = result.returncode == 0 and lib.voice_ready()
+    if not ready and not quiet:
+        print(
+            "Original voice is still unavailable. Authenticate once with 'gh auth login' or add the original reference in Settings.",
+            file=sys.stderr,
+        )
+    return ready
 
 
 def main() -> int:
@@ -39,6 +64,7 @@ def main() -> int:
     voice = sub.add_parser("voice", help="Configure the private local voice reference")
     voice.add_argument("audio", type=Path)
     voice.add_argument("transcript_file", type=Path)
+    sub.add_parser("provision-voice", help="Securely provision the protected original source voice onto this Mac")
 
     gen = sub.add_parser("generate", help="Generate an audiobook using the accepted C voice settings")
     gen.add_argument("book_id")
@@ -78,9 +104,12 @@ def main() -> int:
         print(f"Voice reference configured locally at {lib.private_root}")
         return 0
 
+    if args.command == "provision-voice":
+        return 0 if _provision_original_voice(lib) else 1
+
     if args.command == "generate":
-        if not lib.voice_ready():
-            raise SystemExit("Voice reference is not configured. Run: audiobook voice REFERENCE.wav TRANSCRIPT.txt")
+        if not lib.voice_ready() and not _provision_original_voice(lib):
+            raise SystemExit("Original source voice is not configured. Secure provisioning did not complete.")
         book = lib.get_book(args.book_id)
         ref_audio, ref_text = lib.voice_reference_paths()
         book_dir = lib._book_dir(args.book_id)
@@ -109,6 +138,9 @@ def main() -> int:
 
         if args.library:
             os.environ["TAMIL_AUDIOBOOK_HOME"] = str(args.library.expanduser().resolve())
+        # Provision before FastAPI imports its process-global LocalLibrary instance.
+        # Failure is non-fatal: the UI still launches and Settings remains available.
+        _provision_original_voice(lib)
         url = f"http://{args.host}:{args.port}"
         if not args.no_open:
             threading.Timer(1.0, lambda: webbrowser.open(url)).start()
