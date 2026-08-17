@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import tempfile
 import threading
 import uuid
@@ -50,17 +49,8 @@ def _generate(job_id: str, book_id: str) -> None:
         )
         cues = library.build_cues(book_id, report)
         wav.unlink(missing_ok=True)
-        _job_update(
-            job_id,
-            status="completed",
-            stage="ready",
-            book_id=book_id,
-            title=book["title"],
-            audio_seconds=report["audio_seconds"],
-            aggregate_rtf=report["aggregate_rtf"],
-            cues=len(cues),
-        )
-    except Exception as exc:  # surfaced locally to the owner UI
+        _job_update(job_id, status="completed", stage="ready", book_id=book_id, title=book["title"], audio_seconds=report["audio_seconds"], aggregate_rtf=report["aggregate_rtf"], cues=len(cues))
+    except Exception as exc:
         _job_update(job_id, status="failed", stage="failed", error=str(exc))
 
 
@@ -74,6 +64,11 @@ def dashboard() -> dict:
     return library.dashboard()
 
 
+@app.get("/api/storage")
+def storage() -> dict:
+    return library.cache_stats()
+
+
 @app.get("/api/books/{book_id}")
 def book_detail(book_id: str) -> dict:
     try:
@@ -85,13 +80,42 @@ def book_detail(book_id: str) -> dict:
         raise HTTPException(404, "Book not found")
 
 
+@app.patch("/api/books/{book_id}")
+def edit_book(book_id: str, payload: dict) -> dict:
+    try:
+        return library.update_book(book_id, title=payload.get("title"), author=payload.get("author"), series=payload.get("series"))
+    except FileNotFoundError:
+        raise HTTPException(404, "Book not found")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.delete("/api/books/{book_id}")
+def delete_book(book_id: str) -> dict:
+    try:
+        return library.delete_book(book_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Book not found")
+
+
+@app.delete("/api/books/{book_id}/audio")
+def clear_book_audio(book_id: str) -> dict:
+    try:
+        return library.delete_generated_audio(book_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Book not found")
+
+
+@app.delete("/api/books/{book_id}/progress")
+def clear_book_progress(book_id: str) -> dict:
+    try:
+        return library.clear_progress(book_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Book not found")
+
+
 @app.post("/api/books/import")
-async def import_book(
-    file: UploadFile = File(...),
-    title: str = Form(""),
-    author: str = Form("Unknown author"),
-    series: str = Form(""),
-) -> dict:
+async def import_book(file: UploadFile = File(...), title: str = Form(""), author: str = Form("Unknown author"), series: str = Form("")) -> dict:
     suffix = Path(file.filename or "book.txt").suffix.lower()
     if suffix not in {".pdf", ".txt", ".md"}:
         raise HTTPException(400, "Only PDF, TXT and Markdown are supported")
@@ -108,10 +132,7 @@ async def import_book(
 
 
 @app.post("/api/voice-reference")
-async def save_voice_reference(
-    audio: UploadFile = File(...),
-    transcript: str = Form(...),
-) -> dict:
+async def save_voice_reference(audio: UploadFile = File(...), transcript: str = Form(...)) -> dict:
     suffix = Path(audio.filename or "reference.wav").suffix.lower()
     if suffix not in {".wav", ".mp3", ".m4a", ".opus", ".flac"}:
         raise HTTPException(400, "Unsupported reference audio format")
@@ -125,12 +146,8 @@ async def save_voice_reference(
             library.save_voice_reference(temp_path, transcript)
         else:
             import subprocess
-
             converted = temp_path.with_suffix(".converted.wav")
-            subprocess.run(
-                ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(temp_path), "-ac", "1", "-ar", "24000", str(converted)],
-                check=True,
-            )
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(temp_path), "-ac", "1", "-ar", "24000", str(converted)], check=True)
             library.save_voice_reference(converted, transcript)
             converted.unlink(missing_ok=True)
         return {"status": "ok", "voice_ready": library.voice_ready(), "stored_locally": str(target)}
@@ -138,6 +155,11 @@ async def save_voice_reference(
         raise HTTPException(400, str(exc))
     finally:
         temp_path.unlink(missing_ok=True)
+
+
+@app.delete("/api/voice-reference")
+def delete_voice_reference() -> dict:
+    return library.delete_voice_reference()
 
 
 @app.post("/api/books/{book_id}/generate")
@@ -179,6 +201,11 @@ def progress(book_id: str, payload: dict) -> dict:
         raise HTTPException(404, "Book not found")
 
 
+@app.delete("/api/progress")
+def clear_all_progress() -> dict:
+    return library.clear_progress()
+
+
 @app.post("/api/preferences")
 def preferences(payload: dict) -> dict:
     return library.save_preferences(payload)
@@ -192,6 +219,32 @@ def create_playlist(payload: dict) -> dict:
         raise HTTPException(400, str(exc))
 
 
+@app.get("/api/playlists/{playlist_id}")
+def get_playlist(playlist_id: str) -> dict:
+    try:
+        return library.get_playlist(playlist_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Playlist not found")
+
+
+@app.patch("/api/playlists/{playlist_id}")
+def update_playlist(playlist_id: str, payload: dict) -> dict:
+    try:
+        return library.update_playlist(playlist_id, name=payload.get("name"), books=payload.get("books"))
+    except FileNotFoundError:
+        raise HTTPException(404, "Playlist or book not found")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.delete("/api/playlists/{playlist_id}")
+def delete_playlist(playlist_id: str) -> dict:
+    try:
+        return library.delete_playlist(playlist_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Playlist not found")
+
+
 @app.post("/api/playlists/{playlist_id}/books/{book_id}")
 def playlist_add(playlist_id: str, book_id: str) -> dict:
     try:
@@ -200,10 +253,36 @@ def playlist_add(playlist_id: str, book_id: str) -> dict:
         raise HTTPException(404, "Playlist or book not found")
 
 
+@app.delete("/api/playlists/{playlist_id}/books/{book_id}")
+def playlist_remove(playlist_id: str, book_id: str) -> dict:
+    try:
+        return library.remove_from_playlist(playlist_id, book_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Playlist not found")
+
+
 @app.post("/api/follows")
 def follow(payload: dict) -> dict:
     try:
         return library.set_follow(str(payload.get("kind", "")), str(payload.get("value", "")), bool(payload.get("follow", True)))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.delete("/api/activity")
+def clear_activity() -> dict:
+    return library.clear_activity()
+
+
+@app.delete("/api/cache")
+def clear_cache() -> dict:
+    return library.clear_app_cache()
+
+
+@app.post("/api/reset")
+def reset(payload: dict) -> dict:
+    try:
+        return library.reset_local_data(str(payload.get("confirmation", "")))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
