@@ -19,7 +19,6 @@ concurrency:
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
   acceptance:
@@ -62,40 +61,42 @@ jobs:
           python - <<'PY'
           from tamil_audiobook.app import app
           routes = {route.path for route in app.routes}
-          required = {'/', '/api/dashboard', '/api/books/import', '/api/voice-reference'}
+          required = {'/', '/api/dashboard', '/api/books/import', '/api/voice-reference', '/api/books/{book_id}/estimate'}
           missing = required - routes
           if missing:
               raise SystemExit(f'Missing app routes: {sorted(missing)}')
           print('app_route_smoke=PASS')
           PY
 
-      - name: Recover human-accepted C reference transiently
+      - name: Materialize final 11-minute accepted-C default voice
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p data/private/stage1_accepted outputs/audiobook_engine
-          gh run download 31974866774 \
-            --repo sp4devops/tamil-voice-clone \
-            --name voice-001-stage1-apple-silicon-listening-samples \
-            --dir data/private/stage1_accepted
-          test -s data/private/stage1_accepted/mixed_listening_sample.wav
+          mkdir -p "$RUNNER_TEMP/accepted-c-default" outputs/audiobook_engine
           python - <<'PY'
           from pathlib import Path
-          reference = "வணக்கம், this is my voice. இன்று Kubernetes சரியாக வேலை செய்கிறது."
-          Path('data/private/stage1_accepted/reference.txt').write_text(reference, encoding='utf-8')
-          PY
-          test -s data/private/stage1_accepted/reference.txt
+          from tamil_audiobook.voice import DEFAULT_VOICE_PROVENANCE, materialize_default_voice
 
-      - name: Run real audiobook engine with accepted C settings
+          root = Path(__import__('os').environ['RUNNER_TEMP']) / 'accepted-c-default'
+          audio, transcript = materialize_default_voice(root)
+          text_path = root / 'reference.txt'
+          text_path.write_text(transcript, encoding='utf-8')
+          if DEFAULT_VOICE_PROVENANCE != 'Final 11-minute accepted-C audiobook MP3':
+              raise SystemExit('Unexpected default voice provenance')
+          print('default_voice_provenance=' + DEFAULT_VOICE_PROVENANCE)
+          print('default_voice_materialized=PASS')
+          PY
+          test -s "$RUNNER_TEMP/accepted-c-default/final_11min_accepted_c.wav"
+          test -s "$RUNNER_TEMP/accepted-c-default/reference.txt"
+
+      - name: Run real audiobook engine with packaged accepted C default
         shell: bash
         run: |
           set -euo pipefail
           /usr/bin/time -l python scripts/generate_audiobook.py \
             --text-file tests/data/sample_audiobook.txt \
-            --reference data/private/stage1_accepted/mixed_listening_sample.wav \
-            --reference-text-file data/private/stage1_accepted/reference.txt \
+            --reference "$RUNNER_TEMP/accepted-c-default/final_11min_accepted_c.wav" \
+            --reference-text-file "$RUNNER_TEMP/accepted-c-default/reference.txt" \
             --output-wav outputs/audiobook_engine/sample_audiobook.wav \
             --output-mp3 outputs/audiobook_engine/sample_audiobook.mp3 \
             --report outputs/audiobook_engine/engine_report.json \
@@ -128,6 +129,7 @@ jobs:
           report['accepted_voice_config'] = (
               report['num_steps'] == 20 and abs(report['guidance_scale'] - 2.5) < 1e-9
           )
+          report['default_voice_provenance'] = 'Final 11-minute accepted-C audiobook MP3'
           report['acceptance_status'] = 'PASS' if all((
               report['speed_gate_pass'], report['memory_gate_pass'],
               report['mp3_export_pass'], report['accepted_voice_config']
@@ -139,16 +141,17 @@ jobs:
           print('engine_rtf=' + str(report['aggregate_rtf']))
           print('engine_peak_rss_gib=' + str(report['maximum_resident_set_gib']))
           print('engine_guidance_scale=' + str(report['guidance_scale']))
+          print('default_voice_provenance=' + report['default_voice_provenance'])
           print('engine_acceptance=' + report['acceptance_status'])
           if report['acceptance_status'] != 'PASS':
               raise SystemExit('Stage 2 audiobook engine failed acceptance gates')
           PY
 
-      - name: Remove protected and transient material
+      - name: Remove transient material
         if: always()
         shell: bash
         run: |
-          rm -rf data/private
+          rm -rf "$RUNNER_TEMP/accepted-c-default"
           rm -f outputs/audiobook_engine/resource_usage.txt
 
       - name: Upload safe audiobook engine artifact
