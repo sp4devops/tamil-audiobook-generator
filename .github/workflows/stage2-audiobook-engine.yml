@@ -57,7 +57,7 @@ jobs:
           set -euo pipefail
           python -m pytest -q tests/test_engine.py tests/test_benchmark_contract.py
 
-      - name: Recover accepted Stage 1 reference transiently
+      - name: Recover human-accepted C reference transiently
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -68,31 +68,27 @@ jobs:
             --repo sp4devops/tamil-voice-clone \
             --name voice-001-stage1-apple-silicon-listening-samples \
             --dir data/private/stage1_accepted
-          test -s data/private/stage1_accepted/english_listening_sample.wav
-          # Reuse the already-established Stage-2 reference text source without
-          # printing it into logs or placing it in uploaded artifacts.
+          test -s data/private/stage1_accepted/mixed_listening_sample.wav
           python - <<'PY'
           from pathlib import Path
-          import re
-          workflow = Path('.github/workflows/stage2-omnivoice-human-quality.yml').read_text(encoding='utf-8')
-          match = re.search(r"printf\s+'%s'\s+'([^']+)'", workflow)
-          if not match:
-              raise SystemExit('Could not recover established transient reference text')
-          Path('data/private/stage1_accepted/reference.txt').write_text(match.group(1), encoding='utf-8')
+          reference = "வணக்கம், this is my voice. இன்று Kubernetes சரியாக வேலை செய்கிறது."
+          Path('data/private/stage1_accepted/reference.txt').write_text(reference, encoding='utf-8')
           PY
           test -s data/private/stage1_accepted/reference.txt
 
-      - name: Run real audiobook engine
+      - name: Run real audiobook engine with accepted C settings
         shell: bash
         run: |
           set -euo pipefail
           /usr/bin/time -l python scripts/generate_audiobook.py \
             --text-file tests/data/sample_audiobook.txt \
-            --reference data/private/stage1_accepted/english_listening_sample.wav \
+            --reference data/private/stage1_accepted/mixed_listening_sample.wav \
             --reference-text-file data/private/stage1_accepted/reference.txt \
             --output-wav outputs/audiobook_engine/sample_audiobook.wav \
             --output-mp3 outputs/audiobook_engine/sample_audiobook.mp3 \
             --report outputs/audiobook_engine/engine_report.json \
+            --num-steps 20 \
+            --guidance-scale 2.5 \
             2> >(tee outputs/audiobook_engine/resource_usage.txt >&2)
 
       - name: Enforce engine acceptance gates
@@ -117,8 +113,12 @@ jobs:
           report['speed_gate_pass'] = report['aggregate_rtf'] <= 2.0
           report['memory_gate_pass'] = rss_gib <= 3.0
           report['mp3_export_pass'] = (out / 'sample_audiobook.mp3').stat().st_size > 1000
+          report['accepted_voice_config'] = (
+              report['num_steps'] == 20 and abs(report['guidance_scale'] - 2.5) < 1e-9
+          )
           report['acceptance_status'] = 'PASS' if all((
-              report['speed_gate_pass'], report['memory_gate_pass'], report['mp3_export_pass']
+              report['speed_gate_pass'], report['memory_gate_pass'],
+              report['mp3_export_pass'], report['accepted_voice_config']
           )) else 'FAIL'
           (out / 'engine_report.json').write_text(
               json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8'
@@ -126,6 +126,7 @@ jobs:
           print('engine_audio_seconds=' + str(report['audio_seconds']))
           print('engine_rtf=' + str(report['aggregate_rtf']))
           print('engine_peak_rss_gib=' + str(report['maximum_resident_set_gib']))
+          print('engine_guidance_scale=' + str(report['guidance_scale']))
           print('engine_acceptance=' + report['acceptance_status'])
           if report['acceptance_status'] != 'PASS':
               raise SystemExit('Stage 2 audiobook engine failed acceptance gates')
