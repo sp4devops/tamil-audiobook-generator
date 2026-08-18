@@ -1,27 +1,32 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
+_INSTALLED = False
 
 
-@contextmanager
-def omnivoice_quality_mode():
-    """Let OmniVoice estimate output duration instead of forcing planner timings.
+def install_omnivoice_quality_mode() -> bool:
+    """Stop ListenLeaf planner estimates from becoming hard TTS durations.
 
-    ListenLeaf still keeps its own duration estimates for UI/ETA purposes. Those
-    estimates must never be passed as hard synthesis durations because Tamil and
-    mixed-language chunks can require substantially more speech time, leading to
-    rushed output, skipped words, and garbling.
+    The UI still uses estimated durations for ETA. OmniVoice itself is allowed to
+    estimate the actual target length, preventing dense Tamil/mixed chunks from
+    being compressed into too little audio and dropping or garbling words.
     """
+    global _INSTALLED
+    if _INSTALLED:
+        return False
+
     from mlx_audio.tts.models.omnivoice.omnivoice import Model
 
     original_generate = Model.generate
+    if getattr(original_generate, "_listenleaf_quality_mode", False):
+        _INSTALLED = True
+        return False
 
     def quality_generate(self, *args, **kwargs):
         kwargs.pop("duration_s", None)
         return original_generate(self, *args, **kwargs)
 
+    quality_generate._listenleaf_quality_mode = True
+    quality_generate._listenleaf_original_generate = original_generate
     Model.generate = quality_generate
-    try:
-        yield
-    finally:
-        Model.generate = original_generate
+    _INSTALLED = True
+    return True
