@@ -130,5 +130,27 @@ Path(sys.argv[1]).write_text(json.dumps({
 PY
 chmod 600 "$MARKER_TARGET"
 
+# Audio generated under the previous 4-second reference is invalid. Remove it so
+# ListenLeaf cannot accidentally replay stale garbled chunks or completed MP3s.
+BOOKS_ROOT="$LIBRARY_ROOT/books"
+invalidated=0
+if [[ -d "$BOOKS_ROOT" ]]; then
+  while IFS= read -r -d '' book_dir; do
+    changed=0
+    for name in audiobook.mp3 audiobook.wav report.json cues.json; do
+      if [[ -e "$book_dir/$name" ]]; then
+        rm -f "$book_dir/$name"
+        changed=1
+      fi
+    done
+    if [[ -d "$book_dir/chunks" ]]; then
+      rm -rf "$book_dir/chunks"
+      changed=1
+    fi
+    (( changed == 1 )) && invalidated=$((invalidated + 1))
+  done < <(find "$BOOKS_ROOT" -mindepth 1 -maxdepth 1 -type d -print0)
+fi
+
 log "Human-approved Candidate-C reference is installed locally."
 log "The old 4-second original-source reference has been replaced for Stage-2 synthesis."
+log "Invalidated stale generated audio for $invalidated book(s)."
