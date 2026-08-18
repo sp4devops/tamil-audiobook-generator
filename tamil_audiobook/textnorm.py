@@ -38,9 +38,8 @@ def _looks_visual_order(text: str) -> bool:
     Correct Unicode Tamil stores E/EE/AI signs after their base consonant. A
     visual-order PDF run exposes at least some of those signs at word/run starts
     (or after virama/punctuation), immediately before a Tamil base. We require a
-    meaningful fraction of suspicious signs before enabling whole-run repair so
-    normal Tamil such as `கேளுங்கள்` is never rewritten merely because ே is
-    followed later by another Tamil letter.
+    meaningful fraction of suspicious signs before enabling repair so normal
+    Tamil such as `கேளுங்கள்` is not rewritten.
     """
     chars = list(text)
     candidates = 0
@@ -67,8 +66,12 @@ def _repair_visual_order_run(text: str) -> str:
     while i < len(chars):
         ch = chars[i]
         if ch in _TAMIL_PREBASE:
+            # Only repair signs that are actually in visual order. A valid Tamil
+            # sign already has its base consonant immediately before it; moving
+            # such a sign would corrupt otherwise-correct words on a mixed line.
+            prev = _previous_nonspace(chars, i)
             j, nxt = _next_nonspace(chars, i)
-            if _is_tamil_letter(nxt):
+            if not _is_tamil_letter(prev) and _is_tamil_letter(nxt):
                 out.append(nxt)
                 out.append(ch)
                 i = j + 1
