@@ -402,7 +402,11 @@ def plan_speech_units(
                         final_sentence
                         and not final_line
                         and role in {"dialogue", "list", "heading"}
+                        and _boundary_kind(piece) == "continuation"
                     ):
+                        # A physical line break is a fallback turn boundary only.
+                        # Preserve stronger punctuation such as ? / ! / . so the
+                        # P1 pause engine keeps the intended prosody.
                         boundary_override = "sentence"
 
                     raw_units.append(
