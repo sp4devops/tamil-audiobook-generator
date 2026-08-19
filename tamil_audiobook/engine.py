@@ -14,19 +14,31 @@ from typing import Callable, Iterable
 import numpy as np
 import soundfile as sf
 
+from .pronunciation import apply_pronunciation_overrides, load_overrides, override_signature
 from .speech import classify_language, estimate_spoken_seconds, plan_speech_units
 
 MODEL_ID = "mlx-community/OmniVoice-bfloat16"
 # Immutable Hugging Face revision containing the published bfloat16 weights.
 MODEL_REVISION = "c19bf70730272a96dfc3f38d29f59b92c2e8b554"
-ENGINE_CACHE_VERSION = 4
+ENGINE_CACHE_VERSION = 5
 DEFAULT_NUM_STEPS = 20
 DEFAULT_GUIDANCE_SCALE = 2.5
 DEFAULT_CROSSFADE_MS = 55
+DEFAULT_EDGE_FADE_MS = 15
 DEFAULT_TARGET_CHARS = 140
 DEFAULT_MAX_CHARS = 220
 DEFAULT_ESTIMATE_RTF = 1.55
 DEFAULT_ESTIMATE_STARTUP_SECONDS = 20.0
+
+BOUNDARY_PAUSE_MS = {
+    "continuation": 0,
+    "clause": 80,
+    "clause-strong": 140,
+    "sentence": 220,
+    "question": 260,
+    "exclamation": 260,
+    "paragraph": 420,
+}
 
 GENERATION_MODE_PAUSE_SECONDS = {"fast": 0.0, "balanced": 2.0, "cool": 5.0}
 DEFAULT_GENERATION_MODE = os.environ.get("LISTENLEAF_GENERATION_MODE", "balanced").strip().lower()
@@ -48,6 +60,10 @@ def generation_pause_seconds(mode: str) -> float:
     if normalized not in GENERATION_MODE_PAUSE_SECONDS:
         raise ValueError(f"generation_mode must be one of {', '.join(GENERATION_MODE_PAUSE_SECONDS)}")
     return GENERATION_MODE_PAUSE_SECONDS[normalized]
+
+
+def boundary_pause_ms(boundary: str) -> int:
+    return int(BOUNDARY_PAUSE_MS.get(str(boundary or "continuation"), 0))
 
 
 def detect_language(text: str) -> str:
@@ -88,8 +104,14 @@ def estimate_audiobook(
     if not chunks:
         return {"chunks": 0, "audio_seconds": 0.0, "generation_seconds": 0.0, "generation_mode": generation_mode, "thermal_pause_seconds": pause_seconds}
     raw_audio_seconds = sum(chunk.estimated_seconds for chunk in chunks)
-    overlap = max(0, len(chunks) - 1) * max(0, crossfade_ms) / 1000.0
-    audio_seconds = max(0.0, raw_audio_seconds - overlap)
+    join_adjustment = 0.0
+    for previous in chunks[:-1]:
+        pause_ms = boundary_pause_ms(previous.boundary)
+        if pause_ms > 0:
+            join_adjustment += pause_ms / 1000.0
+        else:
+            join_adjustment -= max(0, crossfade_ms) / 1000.0
+    audio_seconds = max(0.0, raw_audio_seconds + join_adjustment)
     thermal_idle_seconds = pause_seconds * max(0, len(chunks) - 1)
     generation_seconds = max(0.0, startup_seconds + audio_seconds * max(0.1, estimate_rtf) + thermal_idle_seconds)
     return {
@@ -144,12 +166,23 @@ def _mlx_audio_version() -> str:
         return "unknown"
 
 
-def _checkpoint_key(*, text: str, reference_audio: Path, reference_text: str, num_steps: int, guidance_scale: float, crossfade_ms: int, target_chars: int, max_chars: int) -> str:
+def _checkpoint_key(
+    *,
+    text: str,
+    reference_audio: Path,
+    reference_text: str,
+    num_steps: int,
+    guidance_scale: float,
+    crossfade_ms: int,
+    target_chars: int,
+    max_chars: int,
+    pronunciation_signature: str,
+) -> str:
     digest = hashlib.sha256()
     digest.update(text.encode("utf-8")); digest.update(b"\0")
     digest.update(reference_text.encode("utf-8")); digest.update(b"\0")
     digest.update(reference_audio.read_bytes())
-    digest.update((f"cache={ENGINE_CACHE_VERSION}|model={MODEL_ID}@{MODEL_REVISION}|mlx-audio={_mlx_audio_version()}|steps={num_steps}|guidance={guidance_scale}|crossfade={crossfade_ms}|target={target_chars}|max={max_chars}").encode("utf-8"))
+    digest.update((f"cache={ENGINE_CACHE_VERSION}|model={MODEL_ID}@{MODEL_REVISION}|mlx-audio={_mlx_audio_version()}|steps={num_steps}|guidance={guidance_scale}|crossfade={crossfade_ms}|target={target_chars}|max={max_chars}|pronunciation={pronunciation_signature}").encode("utf-8"))
     return digest.hexdigest()
 
 
@@ -195,12 +228,45 @@ def _write_checkpoint(path: Path, audio: np.ndarray, sample_rate: int) -> None:
         temp_path.unlink(missing_ok=True)
 
 
-def _write_stream_part(writer: sf.SoundFile, pending_tail: np.ndarray | None, audio: np.ndarray, fade_samples: int) -> np.ndarray:
+def _fade_out_tail(audio: np.ndarray, fade_samples: int) -> np.ndarray:
+    result = np.asarray(audio, dtype=np.float32).reshape(-1).copy()
+    n = min(max(0, fade_samples), len(result))
+    if n:
+        result[-n:] *= np.linspace(1.0, 0.0, n, endpoint=True, dtype=np.float32)
+    return result
+
+
+def _fade_in_head(audio: np.ndarray, fade_samples: int) -> np.ndarray:
+    result = np.asarray(audio, dtype=np.float32).reshape(-1).copy()
+    n = min(max(0, fade_samples), len(result))
+    if n:
+        result[:n] *= np.linspace(0.0, 1.0, n, endpoint=True, dtype=np.float32)
+    return result
+
+
+def _write_stream_part(
+    writer: sf.SoundFile,
+    pending_tail: np.ndarray | None,
+    audio: np.ndarray,
+    fade_samples: int,
+    *,
+    pause_samples: int = 0,
+    edge_fade_samples: int = 0,
+) -> np.ndarray:
     audio = np.asarray(audio, dtype=np.float32).reshape(-1)
     if pending_tail is None:
         if fade_samples > 0 and len(audio) > fade_samples:
             writer.write(audio[:-fade_samples]); return audio[-fade_samples:].copy()
         return audio.copy()
+
+    if pause_samples > 0:
+        writer.write(_fade_out_tail(pending_tail, edge_fade_samples))
+        writer.write(np.zeros(pause_samples, dtype=np.float32))
+        audio = _fade_in_head(audio, edge_fade_samples)
+        if fade_samples > 0 and len(audio) > fade_samples:
+            writer.write(audio[:-fade_samples]); return audio[-fade_samples:].copy()
+        return audio.copy()
+
     n = min(fade_samples, len(pending_tail), len(audio)) if fade_samples > 0 else 0
     if n <= 0:
         writer.write(pending_tail)
@@ -230,6 +296,8 @@ def synthesize_audiobook(
     if not reference_text.strip(): raise ValueError("reference text is empty")
     if guidance_scale <= 0: raise ValueError("guidance_scale must be positive")
     pause_seconds = generation_pause_seconds(generation_mode)
+    pronunciation_overrides = load_overrides()
+    pronunciation_sig = override_signature(pronunciation_overrides)
     chunks = chunk_text(text, target_chars=target_chars, max_chars=max_chars)
     if not chunks: raise ValueError("input text is empty")
     total_started = time.perf_counter()
@@ -243,7 +311,17 @@ def synthesize_audiobook(
 
     cached_prefix = 0
     if checkpoint_dir is not None:
-        key = _checkpoint_key(text=text, reference_audio=reference_audio, reference_text=reference_text, num_steps=num_steps, guidance_scale=guidance_scale, crossfade_ms=crossfade_ms, target_chars=target_chars, max_chars=max_chars)
+        key = _checkpoint_key(
+            text=text,
+            reference_audio=reference_audio,
+            reference_text=reference_text,
+            num_steps=num_steps,
+            guidance_scale=guidance_scale,
+            crossfade_ms=crossfade_ms,
+            target_chars=target_chars,
+            max_chars=max_chars,
+            pronunciation_signature=pronunciation_sig,
+        )
         cached_prefix = _prepare_checkpoint_dir(checkpoint_dir, key, len(chunks))
     missing_chunks = []
     for index in range(len(chunks)):
@@ -270,6 +348,7 @@ def synthesize_audiobook(
     generation_started = time.perf_counter(); generated_new_count = 0; generated_new_seconds = 0.0; thermal_idle_seconds = 0.0
     try:
         for index, chunk in enumerate(chunks):
+            prepared = apply_pronunciation_overrides(chunk.text, pronunciation_overrides)
             checkpoint = checkpoint_dir / f"chunk_{index:05d}.flac" if checkpoint_dir is not None else None
             cached = bool(checkpoint is not None and checkpoint.is_file() and checkpoint.stat().st_size >= 256)
             if cached:
@@ -277,7 +356,7 @@ def synthesize_audiobook(
             else:
                 if model is None or ref_tokens is None: raise RuntimeError("voice model was not loaded for a missing chunk")
                 started = time.perf_counter()
-                results = list(model.generate(text=chunk.text, language=chunk.language, ref_tokens=ref_tokens, ref_text=reference_text, num_steps=num_steps, guidance_scale=guidance_scale))
+                results = list(model.generate(text=prepared.text, language=chunk.language, ref_tokens=ref_tokens, ref_text=reference_text, num_steps=num_steps, guidance_scale=guidance_scale))
                 elapsed = time.perf_counter() - started
                 if not results: raise RuntimeError(f"no audio returned for chunk {index}")
                 result = results[-1]; audio = _to_numpy(result.audio); current_rate = int(getattr(result, "sample_rate", 0) or getattr(model, "sample_rate", 0))
@@ -288,9 +367,47 @@ def synthesize_audiobook(
                 sample_rate = current_rate; writer = sf.SoundFile(output_wav, mode="w", samplerate=sample_rate, channels=1, subtype="PCM_16", format="WAV")
             elif sample_rate != current_rate: raise RuntimeError("sample rate changed between chunks")
             assert writer is not None
-            fade_samples = max(0, int(sample_rate * crossfade_ms / 1000)); pending_tail = _write_stream_part(writer, pending_tail, audio, fade_samples)
+
             seconds = len(audio) / current_rate
-            chunk_reports.append({"index": index, "language": chunk.language, "speech_profile": chunk.speech_profile, "boundary": chunk.boundary, "chars": len(chunk.text), "generation_seconds": round(elapsed, 3), "audio_seconds": round(seconds, 3), "rtf": round(elapsed / seconds, 4) if elapsed else 0.0, "cached": cached})
+            previous_boundary = chunks[index - 1].boundary if index else None
+            pause_before_ms = boundary_pause_ms(previous_boundary) if previous_boundary else 0
+            fade_samples = max(0, int(sample_rate * crossfade_ms / 1000))
+            edge_fade_samples = max(0, int(sample_rate * DEFAULT_EDGE_FADE_MS / 1000))
+            pause_samples = max(0, int(sample_rate * pause_before_ms / 1000))
+
+            if index == 0:
+                audio_start = 0.0
+            elif pause_before_ms > 0:
+                audio_start = float(chunk_reports[-1]["audio_end"]) + pause_before_ms / 1000.0
+            else:
+                previous_seconds = float(chunk_reports[-1]["audio_seconds"])
+                overlap_seconds = min(max(0, crossfade_ms) / 1000.0, previous_seconds, seconds)
+                audio_start = max(0.0, float(chunk_reports[-1]["audio_end"]) - overlap_seconds)
+            audio_end = audio_start + seconds
+
+            pending_tail = _write_stream_part(
+                writer,
+                pending_tail,
+                audio,
+                fade_samples,
+                pause_samples=pause_samples,
+                edge_fade_samples=edge_fade_samples,
+            )
+            chunk_reports.append({
+                "index": index,
+                "language": chunk.language,
+                "speech_profile": chunk.speech_profile,
+                "boundary": chunk.boundary,
+                "pause_before_ms": pause_before_ms,
+                "audio_start": round(audio_start, 3),
+                "audio_end": round(audio_end, 3),
+                "chars": len(chunk.text),
+                "generation_seconds": round(elapsed, 3),
+                "audio_seconds": round(seconds, 3),
+                "rtf": round(elapsed / seconds, 4) if elapsed else 0.0,
+                "cached": cached,
+                "pronunciation_overrides": list(prepared.applied),
+            })
             completed = index + 1; remaining_missing = sum(1 for item in missing_chunks if item > index); average_new = generated_new_seconds / generated_new_count if generated_new_count else 0.0
             remaining = max(0.0, (average_new + pause_seconds) * remaining_missing); percent = 5.0 + 90.0 * completed / len(chunks)
             progress(stage="synthesizing" if remaining_missing or not cached else "assembling_cached", completed_chunks=completed, playable_chunks=completed, total_chunks=len(chunks), percent=round(percent, 1), estimated_remaining_seconds=round(remaining, 1) if generated_new_count else None, generated_audio_seconds=round(sum(item["audio_seconds"] for item in chunk_reports), 1), resumed_chunks=sum(1 for item in chunk_reports if item["cached"]), thermal_idle_seconds=round(thermal_idle_seconds, 1))
@@ -319,6 +436,9 @@ def synthesize_audiobook(
         "num_steps": num_steps,
         "guidance_scale": guidance_scale,
         "crossfade_ms": crossfade_ms,
+        "edge_fade_ms": DEFAULT_EDGE_FADE_MS,
+        "boundary_pause_ms": dict(BOUNDARY_PAUSE_MS),
+        "pronunciation_signature": pronunciation_sig,
         "generation_mode": generation_mode,
         "thermal_pause_seconds": pause_seconds,
         "thermal_idle_seconds": round(thermal_idle_seconds, 3),
