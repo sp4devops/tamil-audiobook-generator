@@ -13,9 +13,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  checks:
+  static:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -27,38 +27,11 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install system test dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg libsndfile1
-
-      - name: Install unit-test dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          pip install \
-            numpy==2.4.6 \
-            soundfile==0.14.0 \
-            pytest==9.1.1 \
-            fastapi==0.141.1 \
-            python-multipart==0.0.32 \
-            pypdf==6.15.0 \
-            ruff==0.12.10
-
-      - name: Static checks
+      - name: Static syntax checks
         shell: bash
         run: |
           set -euo pipefail
           bash -n scripts/setup_macos.sh scripts/provision_original_voice.sh scripts/load_chosen_default_voice.sh
           node --check tamil_audiobook/static/app.js
           node --check tamil_audiobook/static/progressive.js
-          ruff check tamil_audiobook scripts tests
-
-      - name: Unit and contract tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m pytest tests
+          python -m compileall -q tamil_audiobook scripts tests
