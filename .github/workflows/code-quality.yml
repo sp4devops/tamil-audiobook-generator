@@ -107,7 +107,7 @@ jobs:
         run: |
           set -euo pipefail
           npm install --no-save --no-audit --no-fund @playwright/test@1.62.1
-          npx playwright install --with-deps chromium
+          npx playwright install chromium
 
       - name: Run Chromium smoke test
         shell: bash
