@@ -82,7 +82,9 @@ def estimate_spoken_seconds(text: str, profile: str | None = None) -> float:
     if profile is None:
         _, profile = classify_language(text)
     rate = 2.0 if profile in {"tamil", "mixed-script", "tanglish"} else 2.4
-    return float(min(12.0, max(2.2, words / rate)))
+    # Preserve the established engine contract: estimates stay in the same
+    # 3-12 second envelope used by progress reporting and acceptance tests.
+    return float(min(12.0, max(3.0, words / rate)))
 
 
 def _hard_split(text: str, max_chars: int) -> list[str]:
