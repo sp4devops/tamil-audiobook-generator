@@ -2,6 +2,18 @@ name: stage2-audiobook-engine
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'README.md'
+      - 'tamil_audiobook/**'
+      - 'scripts/generate_audiobook.py'
+      - 'scripts/audiobook.py'
+      - 'scripts/setup_macos.sh'
+      - 'scripts/provision_original_voice.sh'
+      - 'tests/**'
+      - 'stage2_requirements.txt'
+      - '.github/workflows/stage2-audiobook-engine.yml'
   push:
     branches: [main]
     paths:
