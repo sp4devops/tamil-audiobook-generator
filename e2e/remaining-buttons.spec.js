@@ -117,6 +117,10 @@ test('fullscreen, settings toggles, home voice action and reader back buttons re
   await page.locator('[data-close="settingsDialog"]').first().click();
 
   await page.locator('[data-book="book-1"]').first().click();
+  await page.locator('#backFromReader').click();
+  await expect(page.locator('#libraryView')).toHaveClass(/active-view/);
+
+  await page.locator('[data-book="book-1"]').first().click();
   await page.locator('#fullscreenButton').click();
   await expect(page.locator('body')).toHaveClass(/fullscreen-reading/);
   await page.locator('#fullscreenToolbar').click();
@@ -125,9 +129,6 @@ test('fullscreen, settings toggles, home voice action and reader back buttons re
   await expect(page.locator('body')).toHaveClass(/fullscreen-reading/);
   await page.locator('#playerFullscreen').click();
   await expect(page.locator('body')).not.toHaveClass(/fullscreen-reading/);
-
-  await page.locator('#backFromReader').click();
-  await expect(page.locator('#libraryView')).toHaveClass(/active-view/);
 });
 
 test('equalizer and ambience preset buttons activate and persist their choices', async ({ page }) => {
