@@ -15,7 +15,7 @@ from pypdf import PdfReader
 from .engine import chunk_text
 from .textnorm import normalize_book_text
 
-TEXT_NORMALIZATION_VERSION = 2
+TEXT_NORMALIZATION_VERSION = 3
 
 
 def _now() -> str:
@@ -62,6 +62,28 @@ def _dir_size(path: Path) -> int:
     return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
 
+def _valid_preference(key: str, value: Any) -> bool:
+    if key in {"focus_mode", "reduce_motion", "large_text", "shuffle"}:
+        return isinstance(value, bool)
+    if key == "playback_rate":
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and 0.5 <= float(value) <= 3.0
+    if key in {"focus_minutes", "break_minutes"}:
+        return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 180
+    if key == "skip_seconds":
+        return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 300
+    if key == "eq_preset":
+        return value in {"flat", "voice", "warm", "bright"}
+    if key == "ambience":
+        return value in {"off", "rain", "brown"}
+    if key == "theme":
+        return value in {"midnight", "graphite", "paper", "ocean"}
+    if key == "repeat_mode":
+        return value in {"off", "all", "one"}
+    if key == "generation_mode":
+        return value in {"fast", "balanced", "cool"}
+    return False
+
+
 class LocalLibrary:
     """Persistent, local-only book library stored below ~/.tamil_audiobook by default."""
 
@@ -75,6 +97,10 @@ class LocalLibrary:
         self.books_root.mkdir(parents=True, exist_ok=True)
         self.private_root.mkdir(parents=True, exist_ok=True)
         self.cache_root.mkdir(parents=True, exist_ok=True)
+        # The library contains the user's private books, listening history and
+        # clone reference. Do not depend on the caller's umask for privacy.
+        for directory in (self.root, self.books_root, self.private_root, self.cache_root):
+            directory.chmod(0o700)
         if not self.state_path.exists():
             self._write_state(self._default_state())
 
@@ -117,6 +143,7 @@ class LocalLibrary:
     def _write_state(self, state: dict[str, Any]) -> None:
         with self._state_lock:
             _atomic_json(self.state_path, state)
+            self.state_path.chmod(0o600)
 
     def preferences(self) -> dict[str, Any]:
         return dict(self._state()["preferences"])
@@ -140,6 +167,11 @@ class LocalLibrary:
             shutil.rmtree(chunks)
             removed.append("chunks")
         return removed
+
+    @staticmethod
+    def _source_path(book_dir: Path) -> Path | None:
+        sources = sorted(path for path in book_dir.glob("source.*") if path.is_file())
+        return sources[0] if sources else None
 
     def _migrate_text_if_needed(self, meta: dict[str, Any]) -> dict[str, Any]:
         if int(meta.get("text_normalization_version", 0) or 0) >= TEXT_NORMALIZATION_VERSION:
@@ -261,24 +293,30 @@ class LocalLibrary:
     def text(self, book_id: str) -> str:
         book_dir = self._book_dir(book_id)
         path = book_dir / "text.txt"
-        raw = path.read_text(encoding="utf-8")
-        repaired = normalize_book_text(raw)
         meta_path = book_dir / "metadata.json"
         meta = _read_json(meta_path, None)
+        version = int((meta or {}).get("text_normalization_version", 0) or 0)
+        raw = path.read_text(encoding="utf-8")
+
+        # Normalization v3 fixes a destructive visual-order edge case. Rebuild
+        # old entries from the retained original source instead of trying to
+        # repair already-mutated text.txt in place.
+        source = self._source_path(book_dir) if version < TEXT_NORMALIZATION_VERSION else None
+        repaired = extract_book_text(source) if source is not None else normalize_book_text(raw)
         changed = repaired != raw
-        if changed:
+        migrating = version < TEXT_NORMALIZATION_VERSION
+        if changed or migrating:
             path.write_text(repaired, encoding="utf-8")
             self._remove_generated_files(book_dir)
             with self._state_lock:
                 state = self._state()
                 state["progress"].pop(book_id, None)
                 self._write_state(state)
-        if meta and (changed or int(meta.get("text_normalization_version", 0) or 0) < TEXT_NORMALIZATION_VERSION):
+        if meta and (changed or migrating):
             meta["characters"] = len(repaired)
             meta["words"] = len(repaired.split())
             meta["text_normalization_version"] = TEXT_NORMALIZATION_VERSION
-            if changed:
-                meta["updated_at"] = _now()
+            meta["updated_at"] = _now()
             _atomic_json(meta_path, meta)
         return repaired
 
@@ -330,13 +368,28 @@ class LocalLibrary:
         if not transcript.strip():
             raise ValueError("reference transcript is required")
         audio_target, text_target = self.voice_reference_paths()
-        shutil.copy2(audio, audio_target)
+        shutil.copyfile(audio, audio_target)
         text_target.write_text(transcript.strip(), encoding="utf-8")
+        audio_target.chmod(0o600)
+        text_target.chmod(0o600)
+        # A manual reference is an explicit user override and must not be
+        # replaced by automatic Candidate-C provisioning on the next startup.
+        _atomic_json(
+            self.private_root / "manual_voice_reference.json",
+            {"source": "manual-local", "configured_at": _now()},
+        )
+        (self.private_root / "manual_voice_reference.json").chmod(0o600)
+        (self.private_root / "accepted_c_reference.json").unlink(missing_ok=True)
 
     def delete_voice_reference(self) -> dict[str, Any]:
         audio, text = self.voice_reference_paths()
         removed = []
-        for path in (audio, text):
+        for path in (
+            audio,
+            text,
+            self.private_root / "manual_voice_reference.json",
+            self.private_root / "accepted_c_reference.json",
+        ):
             if path.exists():
                 path.unlink()
                 removed.append(path.name)
@@ -375,9 +428,8 @@ class LocalLibrary:
     def save_preferences(self, preferences: dict[str, Any]) -> dict[str, Any]:
         with self._state_lock:
             state = self._state()
-            allowed = set(self._default_state()["preferences"])
             for key, value in preferences.items():
-                if key in allowed:
+                if _valid_preference(key, value):
                     state["preferences"][key] = value
             self._write_state(state)
             return dict(state["preferences"])
@@ -503,6 +555,7 @@ class LocalLibrary:
         before = _dir_size(self.cache_root)
         shutil.rmtree(self.cache_root, ignore_errors=True)
         self.cache_root.mkdir(parents=True, exist_ok=True)
+        self.cache_root.chmod(0o700)
         return {"status": "cleared", "bytes_removed": before}
 
     def reset_local_data(self, confirmation: str) -> dict[str, Any]:
@@ -513,6 +566,8 @@ class LocalLibrary:
             self.books_root.mkdir(parents=True, exist_ok=True)
             self.private_root.mkdir(parents=True, exist_ok=True)
             self.cache_root.mkdir(parents=True, exist_ok=True)
+            for directory in (self.root, self.books_root, self.private_root, self.cache_root):
+                directory.chmod(0o700)
             self._write_state(self._default_state())
             return {"status": "reset", "root": str(self.root)}
 

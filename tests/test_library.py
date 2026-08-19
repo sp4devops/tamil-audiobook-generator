@@ -41,15 +41,21 @@ def test_valid_tamil_prebase_vowels_are_not_reordered():
     assert normalize_book_text(valid) == valid
 
 
-def test_existing_import_migration_repairs_text_and_invalidates_stale_audio(tmp_path: Path):
+def test_existing_import_migration_reextracts_original_and_invalidates_stale_audio(tmp_path: Path):
     lib = LocalLibrary(tmp_path / "library")
     book = make_book(tmp_path, lib)
     book_dir = lib._book_dir(book["id"])
     text_path = book_dir / "text.txt"
     meta_path = book_dir / "metadata.json"
+    source_path = book_dir / "source.txt"
 
-    # Simulate a pre-normalization-version library entry with generated output
-    # and listening progress derived from malformed PDF text.
+    # Simulate text.txt that was corrupted by an older destructive normalizer.
+    # The retained original source remains correct and must be authoritative for
+    # a normalization-version migration.
+    canonical_source = "கேளுங்கள். நேரம் மிகவும் முக்கியம். மேலும் தொடருங்கள்."
+    source_path.write_text(canonical_source, encoding="utf-8")
+    text_path.write_text("ேநயர்கேள", encoding="utf-8")
+
     lib.update_progress(book["id"], 9, 20)
     (book_dir / "audiobook.mp3").write_bytes(b"audio" * 300)
     (book_dir / "report.json").write_text("{}", encoding="utf-8")
@@ -57,14 +63,14 @@ def test_existing_import_migration_repairs_text_and_invalidates_stale_audio(tmp_
     chunks = book_dir / "chunks"
     chunks.mkdir()
     (chunks / "chunk_00000.flac").write_bytes(b"chunk" * 100)
-    text_path.write_text("ேநயர்கேள", encoding="utf-8")
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    meta.pop("text_normalization_version", None)
+    meta["text_normalization_version"] = 2
     meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
 
     dash = lib.dashboard()
     migrated = next(item for item in dash["books"] if item["id"] == book["id"])
-    assert text_path.read_text(encoding="utf-8") == "நேயர்களே"
+    assert text_path.read_text(encoding="utf-8") == canonical_source
+    assert migrated["text_normalization_version"] == 3
     assert migrated["has_audio"] is False
     assert migrated["progress"]["seconds"] == 0
     assert not (book_dir / "audiobook.mp3").exists()
@@ -135,6 +141,12 @@ def test_theme_preferences_and_reset_guard(tmp_path: Path):
     assert prefs["shuffle"] is True
     assert prefs["skip_seconds"] == 30
     assert "ignored" not in prefs
+
+    unchanged = lib.save_preferences({"generation_mode": "banana", "playback_rate": 99, "skip_seconds": -1})
+    assert unchanged["generation_mode"] == "cool"
+    assert unchanged["playback_rate"] == 1.0
+    assert unchanged["skip_seconds"] == 30
+
     try:
         lib.reset_local_data("wrong")
     except ValueError:
@@ -156,12 +168,18 @@ def test_cache_activity_progress_and_voice_deletion(tmp_path: Path):
     audio = tmp_path / "voice.wav"
     audio.write_bytes(b"fake")
     lib.save_voice_reference(audio, "test transcript")
+    voice_audio, voice_text = lib.voice_reference_paths()
     assert lib.voice_ready()
+    assert lib.private_root.stat().st_mode & 0o777 == 0o700
+    assert voice_audio.stat().st_mode & 0o777 == 0o600
+    assert voice_text.stat().st_mode & 0o777 == 0o600
+    assert (lib.private_root / "manual_voice_reference.json").is_file()
     assert lib.clear_app_cache()["bytes_removed"] == 100
     assert lib.clear_progress()["entries"] == 1
     assert lib.clear_activity()["entries"] >= 1
     assert lib.delete_voice_reference()["status"] == "cleared"
     assert not lib.voice_ready()
+    assert not (lib.private_root / "manual_voice_reference.json").exists()
 
 
 def test_build_cues_tracks_crossfade(tmp_path: Path):
@@ -170,6 +188,7 @@ def test_build_cues_tracks_crossfade(tmp_path: Path):
     lib = LocalLibrary(tmp_path / "library")
     book = lib.import_book(source)
     from tamil_audiobook.engine import chunk_text
+
     chunks = chunk_text(lib.text(book["id"]))
     report = {"crossfade_ms": 55, "chunk_reports": [{"audio_seconds": 4.0} for _ in chunks]}
     cues = lib.build_cues(book["id"], report)

@@ -24,24 +24,21 @@ fi
 if ! command -v gh >/dev/null 2>&1; then
   brew install gh
 fi
-if ! command -v age >/dev/null 2>&1; then
-  brew install age
-fi
 
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r stage2_requirements.txt
-python -m pytest -q tests/test_engine.py tests/test_benchmark_contract.py
+python -m pytest -q tests/test_engine.py tests/test_benchmark_contract.py tests/test_voice.py
 
 if gh auth status >/dev/null 2>&1; then
-  if ! bash scripts/provision_original_voice.sh; then
-    echo "Warning: secure original-voice provisioning did not complete. ListenLeaf will retry on startup." >&2
+  if ! bash scripts/load_chosen_default_voice.sh; then
+    echo "Warning: the human-approved Candidate-C voice could not be installed. ListenLeaf will retry on startup and generation will stay unavailable until it succeeds or a voice is configured manually." >&2
   fi
 else
-  echo "Original voice still needs one-time GitHub authentication." >&2
+  echo "The human-approved Candidate-C voice still needs one-time GitHub authentication." >&2
   echo "Run: gh auth login" >&2
-  echo "Then start ListenLeaf; it will provision the original voice automatically." >&2
+  echo "Then start ListenLeaf; it will retry the accepted voice installation automatically." >&2
 fi
 
 echo "Stage 2 local environment is ready."

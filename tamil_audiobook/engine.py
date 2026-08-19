@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import os
 import re
@@ -15,6 +16,7 @@ import numpy as np
 import soundfile as sf
 
 MODEL_ID = "mlx-community/OmniVoice-bf16"
+ENGINE_CACHE_VERSION = 2
 DEFAULT_NUM_STEPS = 20
 DEFAULT_GUIDANCE_SCALE = 2.5
 DEFAULT_CROSSFADE_MS = 55
@@ -75,6 +77,10 @@ def _sentences(text: str) -> list[str]:
     return parts or [cleaned]
 
 
+def _split_long_token(token: str, max_chars: int) -> list[str]:
+    return [token[index:index + max_chars] for index in range(0, len(token), max_chars)]
+
+
 def chunk_text(
     text: str,
     *,
@@ -88,19 +94,29 @@ def chunk_text(
     current = ""
     for sentence in _sentences(text):
         if len(sentence) > max_chars:
+            # Preserve source order: a buffered earlier sentence must be flushed
+            # before any pieces of this oversized sentence are appended.
+            if current:
+                chunks.append(current)
+                current = ""
+
             words = sentence.split()
             piece = ""
             for word in words:
-                candidate = f"{piece} {word}".strip()
-                if piece and len(candidate) > max_chars:
-                    chunks.append(piece)
-                    piece = word
-                else:
-                    piece = candidate
+                # A pathological no-whitespace token can exceed the normal book
+                # chunk limit. Split it deterministically rather than violating
+                # the public max_chars contract.
+                word_parts = _split_long_token(word, max_chars) if len(word) > max_chars else [word]
+                for part in word_parts:
+                    candidate = f"{piece} {part}".strip()
+                    if piece and len(candidate) > max_chars:
+                        chunks.append(piece)
+                        piece = part
+                    elif not piece and len(part) == max_chars:
+                        chunks.append(part)
+                    else:
+                        piece = candidate
             if piece:
-                if current:
-                    chunks.append(current)
-                    current = ""
                 chunks.append(piece)
             continue
 
@@ -182,13 +198,28 @@ def _crossfade_join(parts: Iterable[np.ndarray], sample_rate: int, crossfade_ms:
 
 
 def _write_mp3(wav_path: Path, mp3_path: Path) -> None:
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-i", str(wav_path), "-codec:a", "libmp3lame", "-b:a", "128k", str(mp3_path),
-        ],
-        check=True,
-    )
+    temp_path = mp3_path.with_name(mp3_path.name + ".tmp.mp3")
+    temp_path.unlink(missing_ok=True)
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(wav_path), "-codec:a", "libmp3lame", "-b:a", "128k", str(temp_path),
+            ],
+            check=True,
+        )
+        if not temp_path.is_file() or temp_path.stat().st_size < 1000:
+            raise RuntimeError("ffmpeg produced an invalid MP3")
+        os.replace(temp_path, mp3_path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def _mlx_audio_version() -> str:
+    try:
+        return importlib.metadata.version("mlx-audio")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
 
 
 def _checkpoint_key(
@@ -211,7 +242,11 @@ def _checkpoint_key(
     # Generation mode is deliberately excluded: thermal pacing changes wall time,
     # never audio content, so checkpoints remain reusable when switching modes.
     digest.update(
-        f"{MODEL_ID}|{num_steps}|{guidance_scale}|{crossfade_ms}|{target_chars}|{max_chars}".encode("utf-8")
+        (
+            f"cache={ENGINE_CACHE_VERSION}|model={MODEL_ID}|mlx-audio={_mlx_audio_version()}|"
+            f"steps={num_steps}|guidance={guidance_scale}|crossfade={crossfade_ms}|"
+            f"target={target_chars}|max={max_chars}"
+        ).encode("utf-8")
     )
     return digest.hexdigest()
 
@@ -227,7 +262,17 @@ def _prepare_checkpoint_dir(checkpoint_dir: Path, key: str, total_chunks: int) -
         shutil.rmtree(checkpoint_dir, ignore_errors=True)
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(
-            json.dumps({"key": key, "total_chunks": total_chunks}, indent=2), encoding="utf-8"
+            json.dumps(
+                {
+                    "key": key,
+                    "total_chunks": total_chunks,
+                    "cache_version": ENGINE_CACHE_VERSION,
+                    "model_id": MODEL_ID,
+                    "mlx_audio_version": _mlx_audio_version(),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
         )
     else:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -245,6 +290,20 @@ def _prepare_checkpoint_dir(checkpoint_dir: Path, key: str, total_chunks: int) -
             break
         contiguous += 1
     return contiguous
+
+
+def _write_checkpoint(path: Path, audio: np.ndarray, sample_rate: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(path.name + ".tmp.flac")
+    temp_path.unlink(missing_ok=True)
+    try:
+        sf.write(temp_path, audio, sample_rate, format="FLAC", subtype="PCM_16")
+        info = sf.info(temp_path)
+        if info.frames <= 0 or info.samplerate != sample_rate or info.channels != 1:
+            raise RuntimeError(f"invalid temporary checkpoint {path.name}")
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def _write_stream_part(
@@ -400,13 +459,15 @@ def synthesize_audiobook(
                 if model is None or ref_tokens is None:
                     raise RuntimeError("voice model was not loaded for a missing chunk")
                 started = time.perf_counter()
+                # Do not pass planner duration estimates into OmniVoice. The
+                # production quality gate established that forced durations can
+                # compress dense Tamil/mixed chunks and drop or garble words.
                 results = list(
                     model.generate(
                         text=chunk.text,
                         language=chunk.language,
                         ref_tokens=ref_tokens,
                         ref_text=reference_text,
-                        duration_s=chunk.estimated_seconds,
                         num_steps=num_steps,
                         guidance_scale=guidance_scale,
                     )
@@ -418,8 +479,7 @@ def synthesize_audiobook(
                 audio = _to_numpy(result.audio)
                 current_rate = int(getattr(result, "sample_rate", 0) or getattr(model, "sample_rate", 0))
                 if checkpoint is not None:
-                    checkpoint.parent.mkdir(parents=True, exist_ok=True)
-                    sf.write(checkpoint, audio, current_rate, format="FLAC", subtype="PCM_16")
+                    _write_checkpoint(checkpoint, audio, current_rate)
                 generated_new_count += 1
                 generated_new_seconds += elapsed
 
@@ -516,6 +576,8 @@ def synthesize_audiobook(
         "status": "PASS",
         "engine": "OmniVoice-MLX",
         "model_id": MODEL_ID,
+        "engine_cache_version": ENGINE_CACHE_VERSION,
+        "mlx_audio_version": _mlx_audio_version(),
         "num_steps": num_steps,
         "guidance_scale": guidance_scale,
         "crossfade_ms": crossfade_ms,
