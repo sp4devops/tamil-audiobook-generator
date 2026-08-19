@@ -290,6 +290,7 @@ test('sound and preference buttons update state and persist intended values', as
   await expect(page.locator('#rewind')).toHaveText('↶30');
   await expect(page.locator('#forward')).toHaveText('30↷');
 
+  await page.locator('#player').evaluate(node => node.classList.remove('hidden'));
   await page.locator('#shuffleButton').click();
   await expect(page.locator('#shuffleButton')).toHaveClass(/active/);
   await page.locator('#repeatButton').click();
