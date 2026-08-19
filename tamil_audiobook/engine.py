@@ -14,6 +14,7 @@ from typing import Callable, Iterable
 import numpy as np
 import soundfile as sf
 
+from .continuity import CONTINUITY_VERSION, active_rms_db, match_chunk_level, rolling_reference_db
 from .pronunciation import apply_pronunciation_overrides, load_overrides, override_signature
 from .prosody import PROSODY_VERSION, prosody_for_chunk
 from .speech import classify_language, estimate_spoken_seconds, plan_speech_units
@@ -345,7 +346,7 @@ def synthesize_audiobook(
         if getattr(ref_tokens, "size", 0) == 0: raise RuntimeError("empty clone-reference tokens")
 
     output_wav.parent.mkdir(parents=True, exist_ok=True); output_wav.unlink(missing_ok=True)
-    chunk_reports: list[dict] = []; sample_rate: int | None = None; writer: sf.SoundFile | None = None; pending_tail: np.ndarray | None = None
+    chunk_reports: list[dict] = []; continuity_levels: list[float] = []; sample_rate: int | None = None; writer: sf.SoundFile | None = None; pending_tail: np.ndarray | None = None
     generation_started = time.perf_counter(); generated_new_count = 0; generated_new_seconds = 0.0; thermal_idle_seconds = 0.0
     try:
         for index, chunk in enumerate(chunks):
@@ -365,6 +366,14 @@ def synthesize_audiobook(
                 if checkpoint is not None: _write_checkpoint(checkpoint, audio, current_rate)
                 generated_new_count += 1; generated_new_seconds += elapsed
             if current_rate <= 0 or not len(audio) or not np.isfinite(audio).all(): raise RuntimeError(f"invalid audio for chunk {index}")
+
+            continuity_reference_db = rolling_reference_db(continuity_levels)
+            continuity = match_chunk_level(audio, continuity_reference_db)
+            audio = continuity.audio
+            continuity_adjusted_db = active_rms_db(audio)
+            if continuity_adjusted_db is not None:
+                continuity_levels.append(continuity_adjusted_db)
+
             if sample_rate is None:
                 sample_rate = current_rate; writer = sf.SoundFile(output_wav, mode="w", samplerate=sample_rate, channels=1, subtype="PCM_16", format="WAV")
             elif sample_rate != current_rate: raise RuntimeError("sample rate changed between chunks")
@@ -411,6 +420,12 @@ def synthesize_audiobook(
                 "rtf": round(elapsed / seconds, 4) if elapsed else 0.0,
                 "cached": cached,
                 "pronunciation_overrides": list(prepared.applied),
+                "continuity_source_level_db": round(continuity.level_db, 3) if continuity.level_db is not None else None,
+                "continuity_reference_db": round(continuity.reference_db, 3) if continuity.reference_db is not None else None,
+                "continuity_adjusted_level_db": round(continuity_adjusted_db, 3) if continuity_adjusted_db is not None else None,
+                "continuity_gain_db": round(continuity.applied_gain_db, 3),
+                "continuity_peak_before": round(continuity.peak_before, 5),
+                "continuity_peak_after": round(continuity.peak_after, 5),
             })
             completed = index + 1; remaining_missing = sum(1 for item in missing_chunks if item > index); average_new = generated_new_seconds / generated_new_count if generated_new_count else 0.0
             remaining = max(0.0, (average_new + pause_seconds) * remaining_missing); percent = 5.0 + 90.0 * completed / len(chunks)
@@ -429,6 +444,7 @@ def synthesize_audiobook(
     if output_mp3 is not None:
         output_mp3.parent.mkdir(parents=True, exist_ok=True); _write_mp3(output_wav, output_mp3)
     audio_seconds = total_frames / sample_rate
+    continuity_gains = [abs(float(item["continuity_gain_db"])) for item in chunk_reports]
     report = {
         "status": "GENERATED",
         "quality_status": "UNREVIEWED",
@@ -437,6 +453,9 @@ def synthesize_audiobook(
         "model_revision": MODEL_REVISION,
         "engine_cache_version": ENGINE_CACHE_VERSION,
         "prosody_version": PROSODY_VERSION,
+        "continuity_version": CONTINUITY_VERSION,
+        "continuity_adjusted_chunks": sum(1 for value in continuity_gains if value >= 0.01),
+        "max_continuity_gain_db": round(max(continuity_gains, default=0.0), 3),
         "mlx_audio_version": _mlx_audio_version(),
         "num_steps": num_steps,
         "guidance_scale": guidance_scale,
