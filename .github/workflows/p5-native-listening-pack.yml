@@ -6,9 +6,13 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/p5-native-listening-pack.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/p5-native-listening-pack.yml'
 
 concurrency:
-  group: p5-native-listening-pack
+  group: p5-native-listening-pack-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -43,6 +47,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
           python -m pip install --upgrade pip
           pip install -r stage2_requirements.txt
 
@@ -80,7 +85,7 @@ jobs:
             --case dialogue-02 \
             --case question-01 \
             --case emotion-01 \
-            2> outputs/p5-native-listening-pack/resource_usage.txt
+            2> >(tee outputs/p5-native-listening-pack/resource_usage.txt >&2)
 
       - name: Validate listening pack
         shell: bash
