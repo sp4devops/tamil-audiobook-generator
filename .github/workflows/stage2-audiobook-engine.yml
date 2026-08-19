@@ -2,6 +2,18 @@ name: stage2-audiobook-engine
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'README.md'
+      - 'tamil_audiobook/**'
+      - 'scripts/generate_audiobook.py'
+      - 'scripts/audiobook.py'
+      - 'scripts/setup_macos.sh'
+      - 'scripts/provision_original_voice.sh'
+      - 'tests/**'
+      - 'stage2_requirements.txt'
+      - '.github/workflows/stage2-audiobook-engine.yml'
   push:
     branches: [main]
     paths:
@@ -164,7 +176,20 @@ jobs:
           rss = int(match.group(1)); rss_gib = rss / (1024 ** 3)
           report['maximum_resident_set_bytes'] = rss
           report['maximum_resident_set_gib'] = round(rss_gib, 3)
-          report['speed_gate_pass'] = report['aggregate_rtf'] <= 2.0
+
+          # Balanced/cool modes intentionally sleep between chunks to protect sustained
+          # Apple-Silicon thermals. Keep wall-clock RTF visible, but do not count those
+          # deliberate idle sleeps as model throughput regression.
+          wall_rtf = float(report['aggregate_rtf'])
+          generation_seconds = float(report['generation_seconds'])
+          thermal_idle_seconds = float(report.get('thermal_idle_seconds', 0.0))
+          audio_seconds = float(report['audio_seconds'])
+          active_generation_seconds = max(0.0, generation_seconds - thermal_idle_seconds)
+          active_rtf = active_generation_seconds / audio_seconds if audio_seconds > 0 else float('inf')
+          report['wall_clock_rtf'] = round(wall_rtf, 4)
+          report['active_generation_seconds'] = round(active_generation_seconds, 3)
+          report['active_rtf'] = round(active_rtf, 4)
+          report['speed_gate_pass'] = active_rtf <= 2.0
           report['memory_gate_pass'] = rss_gib <= 3.0
           report['mp3_export_pass'] = (out / 'sample_audiobook.mp3').stat().st_size > 1000
           report['accepted_voice_config'] = report['num_steps'] == 20 and abs(report['guidance_scale'] - 2.5) < 1e-9
@@ -172,7 +197,9 @@ jobs:
           report['acceptance_status'] = 'PASS' if all((report['speed_gate_pass'], report['memory_gate_pass'], report['mp3_export_pass'], report['accepted_voice_config'])) else 'FAIL'
           (out / 'engine_report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
           print('engine_audio_seconds=' + str(report['audio_seconds']))
-          print('engine_rtf=' + str(report['aggregate_rtf']))
+          print('engine_wall_rtf=' + str(report['wall_clock_rtf']))
+          print('engine_active_rtf=' + str(report['active_rtf']))
+          print('engine_thermal_idle_seconds=' + str(report['thermal_idle_seconds']))
           print('engine_peak_rss_gib=' + str(report['maximum_resident_set_gib']))
           print('engine_guidance_scale=' + str(report['guidance_scale']))
           print('engine_acceptance=' + report['acceptance_status'])

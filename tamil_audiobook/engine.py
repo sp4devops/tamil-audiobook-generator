@@ -4,7 +4,6 @@ import hashlib
 import importlib.metadata
 import json
 import os
-import re
 import shutil
 import subprocess
 import time
@@ -15,10 +14,12 @@ from typing import Callable, Iterable
 import numpy as np
 import soundfile as sf
 
+from .speech import classify_language, estimate_spoken_seconds, plan_speech_units
+
 MODEL_ID = "mlx-community/OmniVoice-bfloat16"
 # Immutable Hugging Face revision containing the published bfloat16 weights.
 MODEL_REVISION = "c19bf70730272a96dfc3f38d29f59b92c2e8b554"
-ENGINE_CACHE_VERSION = 3
+ENGINE_CACHE_VERSION = 4
 DEFAULT_NUM_STEPS = 20
 DEFAULT_GUIDANCE_SCALE = 2.5
 DEFAULT_CROSSFADE_MS = 55
@@ -32,15 +33,14 @@ DEFAULT_GENERATION_MODE = os.environ.get("LISTENLEAF_GENERATION_MODE", "balanced
 if DEFAULT_GENERATION_MODE not in GENERATION_MODE_PAUSE_SECONDS:
     DEFAULT_GENERATION_MODE = "balanced"
 
-_TAMIL_RE = re.compile(r"[\u0B80-\u0BFF]")
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?।])\s+|(?<=\u0B83)\s+|\n+")
-
 
 @dataclass(frozen=True)
 class Chunk:
     text: str
     language: str
     estimated_seconds: float
+    speech_profile: str = ""
+    boundary: str = "continuation"
 
 
 def generation_pause_seconds(mode: str) -> float:
@@ -51,69 +51,26 @@ def generation_pause_seconds(mode: str) -> float:
 
 
 def detect_language(text: str) -> str:
-    tamil_chars = len(_TAMIL_RE.findall(text))
-    latin_chars = sum(ch.isalpha() and ord(ch) < 128 for ch in text)
-    if tamil_chars and latin_chars:
-        return "None"
-    if tamil_chars:
-        return "tamil"
-    return "english"
+    language, _ = classify_language(text)
+    return language
 
 
 def estimate_duration_seconds(text: str) -> float:
-    words = max(1, len(text.split()))
-    tamil_chars = len(_TAMIL_RE.findall(text))
-    seconds = words / (2.0 if tamil_chars else 2.4)
-    return float(min(12.0, max(3.0, seconds)))
-
-
-def _sentences(text: str) -> list[str]:
-    cleaned = re.sub(r"[ \t]+", " ", text.strip())
-    if not cleaned:
-        return []
-    parts = [part.strip() for part in _SENTENCE_SPLIT_RE.split(cleaned) if part.strip()]
-    return parts or [cleaned]
-
-
-def _split_long_token(token: str, max_chars: int) -> list[str]:
-    return [token[index:index + max_chars] for index in range(0, len(token), max_chars)]
+    _, profile = classify_language(text)
+    return estimate_spoken_seconds(text, profile)
 
 
 def chunk_text(text: str, *, target_chars: int = DEFAULT_TARGET_CHARS, max_chars: int = DEFAULT_MAX_CHARS) -> list[Chunk]:
-    if target_chars <= 0 or max_chars < target_chars:
-        raise ValueError("invalid chunk size limits")
-    chunks: list[str] = []
-    current = ""
-    for sentence in _sentences(text):
-        if len(sentence) > max_chars:
-            if current:
-                chunks.append(current)
-                current = ""
-            words = sentence.split()
-            piece = ""
-            for word in words:
-                word_parts = _split_long_token(word, max_chars) if len(word) > max_chars else [word]
-                for part in word_parts:
-                    candidate = f"{piece} {part}".strip()
-                    if piece and len(candidate) > max_chars:
-                        chunks.append(piece)
-                        piece = part
-                    elif not piece and len(part) == max_chars:
-                        chunks.append(part)
-                    else:
-                        piece = candidate
-            if piece:
-                chunks.append(piece)
-            continue
-        candidate = f"{current} {sentence}".strip()
-        if current and (len(candidate) > max_chars or len(current) >= target_chars):
-            chunks.append(current)
-            current = sentence
-        else:
-            current = candidate
-    if current:
-        chunks.append(current)
-    return [Chunk(text=item, language=detect_language(item), estimated_seconds=estimate_duration_seconds(item)) for item in chunks]
+    return [
+        Chunk(
+            text=unit.text,
+            language=unit.language,
+            estimated_seconds=unit.estimated_seconds,
+            speech_profile=unit.profile,
+            boundary=unit.boundary,
+        )
+        for unit in plan_speech_units(text, target_chars=target_chars, max_chars=max_chars)
+    ]
 
 
 def estimate_audiobook(
@@ -333,7 +290,7 @@ def synthesize_audiobook(
             assert writer is not None
             fade_samples = max(0, int(sample_rate * crossfade_ms / 1000)); pending_tail = _write_stream_part(writer, pending_tail, audio, fade_samples)
             seconds = len(audio) / current_rate
-            chunk_reports.append({"index": index, "language": chunk.language, "chars": len(chunk.text), "generation_seconds": round(elapsed, 3), "audio_seconds": round(seconds, 3), "rtf": round(elapsed / seconds, 4) if elapsed else 0.0, "cached": cached})
+            chunk_reports.append({"index": index, "language": chunk.language, "speech_profile": chunk.speech_profile, "boundary": chunk.boundary, "chars": len(chunk.text), "generation_seconds": round(elapsed, 3), "audio_seconds": round(seconds, 3), "rtf": round(elapsed / seconds, 4) if elapsed else 0.0, "cached": cached})
             completed = index + 1; remaining_missing = sum(1 for item in missing_chunks if item > index); average_new = generated_new_seconds / generated_new_count if generated_new_count else 0.0
             remaining = max(0.0, (average_new + pause_seconds) * remaining_missing); percent = 5.0 + 90.0 * completed / len(chunks)
             progress(stage="synthesizing" if remaining_missing or not cached else "assembling_cached", completed_chunks=completed, playable_chunks=completed, total_chunks=len(chunks), percent=round(percent, 1), estimated_remaining_seconds=round(remaining, 1) if generated_new_count else None, generated_audio_seconds=round(sum(item["audio_seconds"] for item in chunk_reports), 1), resumed_chunks=sum(1 for item in chunk_reports if item["cached"]), thermal_idle_seconds=round(thermal_idle_seconds, 1))

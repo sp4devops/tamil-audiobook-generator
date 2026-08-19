@@ -1,9 +1,10 @@
 # Stage-2 OmniVoice/MLX runtime, local app, and test dependencies
-# Core voice runtime pins were validated on macos-14-arm64 acceptance runs.
-mlx-audio==0.4.8
+# Core voice runtime pins are validated by the Apple-Silicon acceptance workflow.
+# mlx-audio 0.4.6 requires transformers >=5.5.0,<5.13.0.
+mlx-audio==0.4.6
 mlx==0.32.0
 mlx-lm==0.31.3
-transformers==5.15.0
+transformers==5.12.1
 soundfile==0.14.0
 numpy==2.4.6
 pytest==9.1.1
