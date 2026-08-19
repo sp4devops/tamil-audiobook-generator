@@ -20,7 +20,9 @@ from .api_models import (
     ProgressRequest,
     ResetRequest,
 )
-from .engine import DEFAULT_GUIDANCE_SCALE, DEFAULT_NUM_STEPS, estimate_audiobook, synthesize_audiobook
+from .controlled_engine import synthesize_audiobook_with_controls
+from .engine import DEFAULT_GUIDANCE_SCALE, DEFAULT_NUM_STEPS, estimate_audiobook
+from .generation_controls import OmniVoiceGenerationControls
 from .library import LocalLibrary
 from .uploads import BOOK_UPLOAD_LIMIT_BYTES, VOICE_UPLOAD_LIMIT_BYTES, UploadTooLargeError, save_upload_bounded
 from .voice import ORIGINAL_REQUIRED_LABEL, ORIGINAL_SOURCE_LABEL, original_voice_available, resolve_voice
@@ -150,7 +152,8 @@ def _generate(job_id: str, book_id: str, generation_mode: str) -> None:
             voice_source=voice_source,
             generation_mode=generation_mode,
         )
-        report = synthesize_audiobook(
+        report = synthesize_audiobook_with_controls(
+            controls=OmniVoiceGenerationControls(),
             text=library.text(book_id),
             reference_audio=reference_audio,
             reference_text=reference_text,

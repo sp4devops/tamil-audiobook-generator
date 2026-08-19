@@ -20,7 +20,56 @@ _DEFAULT_OVERRIDES = {
     "OmniVoice": "Omni Voice",
 }
 
-_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9.+#_-]*)(?![A-Za-z0-9_])")
+# Safe, high-confidence Romanized Tamil normalizations. The replacement is only
+# sent to the TTS model; the book text and read-along text remain unchanged.
+# This normalization is intentionally limited to all-Latin/Tanglish chunks.
+# Mixed Tamil-script chunks keep their established baseline because OmniVoice
+# already has an explicit multilingual signal there.
+_TANGLISH_NORMALIZATIONS = {
+    "machi": "மச்சி",
+    "machan": "மச்சான்",
+    "dei": "டேய்",
+    "da": "டா",
+    "enna": "என்ன",
+    "ennada": "என்னடா",
+    "aama": "ஆமா",
+    "ama": "ஆமா",
+    "illa": "இல்ல",
+    "illai": "இல்லை",
+    "irukku": "இருக்கு",
+    "iruka": "இருக்கா",
+    "irukkaa": "இருக்கா",
+    "romba": "ரொம்ப",
+    "seri": "சரி",
+    "sari": "சரி",
+    "pannu": "பண்ணு",
+    "pannunga": "பண்ணுங்க",
+    "pannalaam": "பண்ணலாம்",
+    "pannalam": "பண்ணலாம்",
+    "paathiya": "பாத்தியா",
+    "semma": "செம",
+    "apdi": "அப்படி",
+    "appadi": "அப்படி",
+    "epdi": "எப்படி",
+    "eppadi": "எப்படி",
+    "naan": "நான்",
+    "nee": "நீ",
+    "neenga": "நீங்க",
+    "namma": "நம்ம",
+    "inga": "இங்க",
+    "yen": "ஏன்",
+    "venum": "வேணும்",
+    "venam": "வேணாம்",
+    "appuram": "அப்புறம்",
+    "poitu": "போய்ட்டு",
+    "vandhu": "வந்து",
+}
+
+_TAMIL_RE = re.compile(r"[\u0B80-\u0BFF]")
+# Hyphen is intentionally excluded from the ASCII token. That lets a base term
+# still match when Tamil morphology is attached, for example API-ஐ, server-ல,
+# MongoDB-க்கு. The suffix and punctuation are preserved by the regex engine.
+_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9.+#_]*)(?![A-Za-z0-9_])")
 
 
 @dataclass(frozen=True)
@@ -52,24 +101,44 @@ def load_overrides(path: Path | None = None) -> dict[str, str]:
 
 
 def override_signature(overrides: dict[str, str]) -> str:
-    payload = json.dumps(overrides, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    payload = json.dumps(
+        {
+            "overrides": overrides,
+            "tanglish_normalizations": _TANGLISH_NORMALIZATIONS,
+            "tanglish_policy": "latin-only-v1",
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def apply_pronunciation_overrides(text: str, overrides: dict[str, str] | None = None) -> PronunciationResult:
     mapping = overrides if overrides is not None else _DEFAULT_OVERRIDES
-    if not text or not mapping:
+    if not text:
         return PronunciationResult(text=text, applied=())
+
+    folded_mapping = {key.casefold(): value for key, value in mapping.items()}
     applied: list[str] = []
+    normalize_tanglish = not bool(_TAMIL_RE.search(text))
 
     def replace(match: re.Match[str]) -> str:
         token = match.group(1)
         spoken = mapping.get(token)
         if spoken is None:
-            return token
-        if spoken != token:
-            applied.append(token)
-        return spoken
+            spoken = folded_mapping.get(token.casefold())
+        if spoken is not None:
+            if spoken != token:
+                applied.append(token)
+            return spoken
+
+        if normalize_tanglish:
+            normalized = _TANGLISH_NORMALIZATIONS.get(token.casefold())
+            if normalized is not None:
+                applied.append(token)
+                return normalized
+        return token
 
     rendered = _TOKEN_RE.sub(replace, text)
     return PronunciationResult(text=rendered, applied=tuple(applied))
