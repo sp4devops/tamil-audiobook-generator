@@ -4,7 +4,9 @@ import importlib
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
+import soundfile as sf
 from fastapi import HTTPException
 
 from tamil_audiobook.library import LocalLibrary
@@ -33,7 +35,7 @@ def _make_book(tmp_path: Path):
 
 def _configure_fake_original_voice(tmp_path: Path) -> None:
     audio, transcript = appmod.library.voice_reference_paths()
-    audio.write_bytes(b"RIFF" + b"x" * 2000)
+    sf.write(audio, np.zeros(48000, dtype=np.float32), 24000)
     transcript.write_text("local reference transcript", encoding="utf-8")
 
 
