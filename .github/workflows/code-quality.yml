@@ -34,6 +34,7 @@ jobs:
           bash -n scripts/setup_macos.sh scripts/provision_original_voice.sh scripts/load_chosen_default_voice.sh
           node --check tamil_audiobook/static/app.js
           node --check tamil_audiobook/static/progressive.js
+          node --check tamil_audiobook/static/product-ui.js
           node --check playwright.config.js
           node --check e2e/ui.spec.js
           python -m compileall -q tamil_audiobook scripts tests e2e
