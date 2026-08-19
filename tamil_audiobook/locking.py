@@ -13,10 +13,18 @@ class InterProcessRLock:
     descriptor concurrently. The outermost acquisition takes an advisory
     exclusive flock; nested acquisitions in the same thread only increase the
     depth, so normal LocalLibrary method nesting remains safe.
+
+    A LocalLibrary passes ``<root>/.library.lock`` as its logical lock path.
+    The physical lock is stored as a sibling of ``root`` so deleting/resetting
+    the library directory cannot replace the inode while another process is
+    still holding the lock.
     """
 
     def __init__(self, path: Path):
-        self.path = Path(path)
+        requested = Path(path)
+        if requested.name == ".library.lock":
+            requested = requested.parent.parent / f".{requested.parent.name}.lock"
+        self.path = requested
         self._thread_lock = threading.RLock()
         self._local = threading.local()
 
