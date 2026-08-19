@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import subprocess
@@ -23,27 +24,48 @@ from tamil_audiobook.library import LocalLibrary
 
 
 def _provision_original_voice(lib: LocalLibrary, *, quiet: bool = False) -> bool:
-    if lib.voice_ready():
+    """Install the human-approved Candidate-C profile used by Stage 2.
+
+    The older short original-source provisioner is intentionally not used here:
+    it is not the profile that passed the Stage-2 human quality gate.
+    """
+    accepted_marker = lib.private_root / "accepted_c_reference.json"
+    manual_marker = lib.private_root / "manual_voice_reference.json"
+    if lib.voice_ready() and (accepted_marker.is_file() or manual_marker.is_file()):
         return True
-    script = REPO_ROOT / "scripts" / "provision_original_voice.sh"
+
+    script = REPO_ROOT / "scripts" / "load_chosen_default_voice.sh"
     if not script.is_file():
         if not quiet:
-            print("Original-voice provisioner is missing from this checkout.", file=sys.stderr)
+            print("Accepted Candidate-C voice loader is missing from this checkout.", file=sys.stderr)
         return False
     if not quiet:
-        print("Original source voice is not configured; starting secure one-time provisioning…")
+        print("Accepted Candidate-C voice is not configured; starting secure one-time installation…")
+    env = os.environ.copy()
+    env["TAMIL_AUDIOBOOK_HOME"] = str(lib.root)
     result = subprocess.run(
-        ["bash", str(script), "--library", str(lib.root)],
+        ["bash", str(script)],
         cwd=REPO_ROOT,
+        env=env,
         check=False,
     )
-    ready = result.returncode == 0 and lib.voice_ready()
+    ready = result.returncode == 0 and lib.voice_ready() and accepted_marker.is_file()
     if not ready and not quiet:
         print(
-            "Original voice is still unavailable. Authenticate once with 'gh auth login' or add the original reference in Settings.",
+            "Accepted voice is still unavailable. Authenticate once with 'gh auth login' or add a manual reference in Settings.",
             file=sys.stderr,
         )
     return ready
+
+
+def _is_loopback_host(host: str) -> bool:
+    value = host.strip().lower()
+    if value == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
 
 
 def main() -> int:
@@ -61,10 +83,10 @@ def main() -> int:
     info = sub.add_parser("info", help="Show a book")
     info.add_argument("book_id")
 
-    voice = sub.add_parser("voice", help="Configure the private local voice reference")
+    voice = sub.add_parser("voice", help="Configure a private local voice reference")
     voice.add_argument("audio", type=Path)
     voice.add_argument("transcript_file", type=Path)
-    sub.add_parser("provision-voice", help="Securely provision the protected original source voice onto this Mac")
+    sub.add_parser("provision-voice", help="Securely install the human-approved Candidate-C Stage-2 voice")
 
     gen = sub.add_parser("generate", help="Generate an audiobook using the accepted C voice settings")
     gen.add_argument("book_id")
@@ -73,6 +95,11 @@ def main() -> int:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--no-open", action="store_true")
+    serve.add_argument(
+        "--allow-network",
+        action="store_true",
+        help="Explicitly allow binding the unauthenticated local app to a non-loopback host",
+    )
 
     args = parser.parse_args()
     lib = LocalLibrary(args.library)
@@ -108,8 +135,8 @@ def main() -> int:
         return 0 if _provision_original_voice(lib) else 1
 
     if args.command == "generate":
-        if not lib.voice_ready() and not _provision_original_voice(lib):
-            raise SystemExit("Original source voice is not configured. Secure provisioning did not complete.")
+        if not _provision_original_voice(lib):
+            raise SystemExit("Accepted Candidate-C or manually configured source voice is unavailable. Secure provisioning did not complete.")
         book = lib.get_book(args.book_id)
         ref_audio, ref_text = lib.voice_reference_paths()
         book_dir = lib._book_dir(args.book_id)
@@ -136,6 +163,11 @@ def main() -> int:
         import webbrowser
         import uvicorn
 
+        if not _is_loopback_host(args.host) and not args.allow_network:
+            raise SystemExit(
+                "Refusing to expose the unauthenticated local library on a non-loopback host. "
+                "Use --allow-network only if you understand that library and destructive API endpoints become reachable on that interface."
+            )
         if args.library:
             os.environ["TAMIL_AUDIOBOOK_HOME"] = str(args.library.expanduser().resolve())
         # Provision before FastAPI imports its process-global LocalLibrary instance.
