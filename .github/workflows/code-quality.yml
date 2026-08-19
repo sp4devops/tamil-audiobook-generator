@@ -34,7 +34,9 @@ jobs:
           bash -n scripts/setup_macos.sh scripts/provision_original_voice.sh scripts/load_chosen_default_voice.sh
           node --check tamil_audiobook/static/app.js
           node --check tamil_audiobook/static/progressive.js
-          python -m compileall -q tamil_audiobook scripts tests
+          node --check playwright.config.js
+          node --check e2e/ui.spec.js
+          python -m compileall -q tamil_audiobook scripts tests e2e
 
   tests:
     runs-on: ubuntu-latest
@@ -82,7 +84,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ruff check tamil_audiobook scripts tests
+          ruff check tamil_audiobook scripts tests e2e
 
       - name: Run full pytest suite
         shell: bash
@@ -90,3 +92,25 @@ jobs:
           set -euo pipefail
           ffmpeg -version | head -n 1
           python -m pytest tests
+
+  browser-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Install Playwright
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-save --no-audit --no-fund @playwright/test@1.62.1
+          npx playwright install --with-deps chromium
+
+      - name: Run Chromium smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx playwright test --project=chromium
