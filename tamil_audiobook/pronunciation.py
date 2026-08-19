@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,24 +29,35 @@ class PronunciationResult:
     applied: tuple[str, ...]
 
 
+def default_override_path() -> Path:
+    root = Path(os.environ.get("TAMIL_AUDIOBOOK_HOME", "~/.tamil_audiobook")).expanduser()
+    return root / "pronunciation.json"
+
+
 def load_overrides(path: Path | None = None) -> dict[str, str]:
     overrides = dict(_DEFAULT_OVERRIDES)
-    if path is None or not path.is_file():
+    source = path if path is not None else default_override_path()
+    if not source.is_file():
         return overrides
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(source.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("pronunciation overrides must be a JSON object")
-    for source, spoken in payload.items():
-        if not isinstance(source, str) or not source.strip():
+    for raw_source, spoken in payload.items():
+        if not isinstance(raw_source, str) or not raw_source.strip():
             raise ValueError("pronunciation override keys must be non-empty strings")
         if not isinstance(spoken, str) or not spoken.strip():
-            raise ValueError(f"pronunciation override for {source!r} must be a non-empty string")
-        overrides[source] = spoken.strip()
+            raise ValueError(f"pronunciation override for {raw_source!r} must be a non-empty string")
+        overrides[raw_source] = spoken.strip()
     return overrides
 
 
+def override_signature(overrides: dict[str, str]) -> str:
+    payload = json.dumps(overrides, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def apply_pronunciation_overrides(text: str, overrides: dict[str, str] | None = None) -> PronunciationResult:
-    mapping = overrides or _DEFAULT_OVERRIDES
+    mapping = overrides if overrides is not None else _DEFAULT_OVERRIDES
     if not text or not mapping:
         return PronunciationResult(text=text, applied=())
     applied: list[str] = []
