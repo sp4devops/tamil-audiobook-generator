@@ -69,6 +69,9 @@ test('library opens reader and progressive lifecycle without browser errors', as
   await page.goto('/');
 
   await expect(page.getByRole('heading', { name: 'Good listening' })).toBeVisible();
+  await expect(page.locator('#premiumHero')).toBeVisible();
+  await expect(page.locator('#premiumHero')).toContainText('Turn reading into');
+  await expect(page.locator('#heroBookCount')).toHaveText('1');
   await expect(page.getByText('Tamil E2E Book').first()).toBeVisible();
   await expect(page.getByText('✓ Original source voice is configured locally.')).toBeAttached();
   await expect(page.locator('#homeVoiceStatus')).toHaveText('Voice ready');
@@ -84,6 +87,39 @@ test('library opens reader and progressive lifecycle without browser errors', as
 
   await page.locator('#settingsButton').click();
   await expect(page.locator('#settingsDialog')).toHaveAttribute('open', '');
+  await expect(page.locator('.appearance-enhancer')).toBeVisible();
+
+  expect(pageErrors).toEqual([]);
+});
+
+test('premium library controls filter, switch views and persist appearance choices', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
+
+  await page.route('**/api/dashboard', route => json(route, dashboard));
+  await page.goto('/');
+
+  await page.getByRole('button', { name: 'Your Library' }).click();
+  await expect(page.locator('#libraryToolbar')).toBeVisible();
+  await expect(page.locator('#libraryList .library-row')).toHaveCount(1);
+
+  await page.locator('#librarySearch').fill('not present');
+  await expect(page.locator('#libraryList .library-row')).toHaveClass(/hidden/);
+  await page.locator('#librarySearch').fill('Tamil');
+  await expect(page.locator('#libraryList .library-row')).not.toHaveClass(/hidden/);
+
+  await page.locator('#libraryGridMode').click();
+  await expect(page.locator('#premiumLibraryGrid')).toHaveClass(/active/);
+  await expect(page.locator('#premiumLibraryGrid [data-book="book-1"]')).toBeVisible();
+  await expect(page.locator('#premiumLibraryGrid .book-badge')).toHaveText('TXT');
+
+  await page.locator('#settingsButton').click();
+  await page.locator('.accent-swatch[data-accent="violet"]').click();
+  await page.locator('#densityCompact').click();
+  await expect(page.locator('html')).toHaveAttribute('data-accent', 'violet');
+  await expect(page.locator('body')).toHaveAttribute('data-density', 'compact');
+  expect(await page.evaluate(() => localStorage.getItem('listenleaf-accent'))).toBe('violet');
+  expect(await page.evaluate(() => localStorage.getItem('listenleaf-density'))).toBe('compact');
 
   expect(pageErrors).toEqual([]);
 });
