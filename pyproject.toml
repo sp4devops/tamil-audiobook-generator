@@ -1,0 +1,18 @@
+[project]
+name = "tamil-audiobook-generator"
+version = "0.1.0"
+description = "Local Tamil/English audiobook generation and listening app"
+requires-python = ">=3.11,<3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+exclude = ["outputs", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
