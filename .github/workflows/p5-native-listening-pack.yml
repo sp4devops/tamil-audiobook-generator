@@ -6,9 +6,13 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/p5-native-listening-pack.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/p5-native-listening-pack.yml'
 
 concurrency:
-  group: p5-native-listening-pack
+  group: p5-native-listening-pack-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
