@@ -7,9 +7,10 @@ def test_ordinary_narration_keeps_accepted_baseline_instruction():
     assert profile.instruct == "None"
 
 
-def test_dialogue_gets_restrained_conversational_instruction():
+def test_mixed_dialogue_gets_south_indian_bilingual_instruction():
     profile = prosody_for_chunk('“டேய், server மீண்டும் down ஆயிடுச்சு.”', "sentence")
-    assert profile.name == "dialogue"
+    assert profile.name == "mixed-dialogue"
+    assert "South-Indian English" in profile.instruct
     assert "same speaker identity" in profile.instruct
 
 
