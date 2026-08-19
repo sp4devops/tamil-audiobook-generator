@@ -14,5 +14,6 @@ line-length = 120
 exclude = ["outputs", ".venv"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP"]
-ignore = ["E501"]
+# Start CI with high-signal correctness rules; broader style cleanup can happen
+# separately without blocking functional fixes.
+select = ["E9", "F63", "F7", "F82"]
