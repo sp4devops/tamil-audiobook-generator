@@ -22,8 +22,9 @@ _DEFAULT_OVERRIDES = {
 
 # Safe, high-confidence Romanized Tamil normalizations. The replacement is only
 # sent to the TTS model; the book text and read-along text remain unchanged.
-# Converting common colloquial tokens to Tamil script avoids the English-token
-# pronunciation bias that makes Tanglish sound foreign or mechanical.
+# This normalization is intentionally limited to all-Latin/Tanglish chunks.
+# Mixed Tamil-script chunks keep their established baseline because OmniVoice
+# already has an explicit multilingual signal there.
 _TANGLISH_NORMALIZATIONS = {
     "machi": "மச்சி",
     "machan": "மச்சான்",
@@ -64,6 +65,7 @@ _TANGLISH_NORMALIZATIONS = {
     "vandhu": "வந்து",
 }
 
+_TAMIL_RE = re.compile(r"[\u0B80-\u0BFF]")
 # Hyphen is intentionally excluded from the ASCII token. That lets a base term
 # still match when Tamil morphology is attached, for example API-ஐ, server-ல,
 # MongoDB-க்கு. The suffix and punctuation are preserved by the regex engine.
@@ -103,6 +105,7 @@ def override_signature(overrides: dict[str, str]) -> str:
         {
             "overrides": overrides,
             "tanglish_normalizations": _TANGLISH_NORMALIZATIONS,
+            "tanglish_policy": "latin-only-v1",
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -118,6 +121,7 @@ def apply_pronunciation_overrides(text: str, overrides: dict[str, str] | None = 
 
     folded_mapping = {key.casefold(): value for key, value in mapping.items()}
     applied: list[str] = []
+    normalize_tanglish = not bool(_TAMIL_RE.search(text))
 
     def replace(match: re.Match[str]) -> str:
         token = match.group(1)
@@ -129,10 +133,11 @@ def apply_pronunciation_overrides(text: str, overrides: dict[str, str] | None = 
                 applied.append(token)
             return spoken
 
-        normalized = _TANGLISH_NORMALIZATIONS.get(token.casefold())
-        if normalized is not None:
-            applied.append(token)
-            return normalized
+        if normalize_tanglish:
+            normalized = _TANGLISH_NORMALIZATIONS.get(token.casefold())
+            if normalized is not None:
+                applied.append(token)
+                return normalized
         return token
 
     rendered = _TOKEN_RE.sub(replace, text)
