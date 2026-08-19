@@ -4,7 +4,6 @@ import json
 import os
 import shutil
 import tempfile
-import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +12,7 @@ from typing import Any
 from pypdf import PdfReader
 
 from .engine import chunk_text
+from .locking import InterProcessRLock
 from .textnorm import normalize_book_text
 
 TEXT_NORMALIZATION_VERSION = 3
@@ -93,7 +93,7 @@ class LocalLibrary:
         self.private_root = self.root / "private"
         self.cache_root = self.root / "cache"
         self.state_path = self.root / "state.json"
-        self._state_lock = threading.RLock()
+        self._state_lock = InterProcessRLock(self.root / ".library.lock")
         self.books_root.mkdir(parents=True, exist_ok=True)
         self.private_root.mkdir(parents=True, exist_ok=True)
         self.cache_root.mkdir(parents=True, exist_ok=True)
