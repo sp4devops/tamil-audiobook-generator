@@ -1,0 +1,51 @@
+name: code-quality
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: macos-14
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r stage2_requirements.txt
+          pip install ruff==0.12.10
+
+      - name: Static checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/setup_macos.sh scripts/provision_original_voice.sh scripts/load_chosen_default_voice.sh
+          node --check tamil_audiobook/static/app.js
+          node --check tamil_audiobook/static/progressive.js
+          ruff check tamil_audiobook scripts tests
+
+      - name: Unit and contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pytest tests
