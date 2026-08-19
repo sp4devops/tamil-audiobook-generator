@@ -20,6 +20,13 @@ class _ControlledModel:
     def __getattr__(self, name):
         return getattr(self._model, name)
 
+    def _sample_rate(self) -> int:
+        direct = int(getattr(self._model, "sample_rate", 0) or 0)
+        if direct > 0:
+            return direct
+        config = getattr(self._model, "config", None)
+        return int(getattr(config, "sample_rate", 0) or 0)
+
     def generate(self, *args, **kwargs):
         controls = self._controls
         text = kwargs.get("text")
@@ -39,7 +46,7 @@ class _ControlledModel:
         duration_s = scaled_duration_seconds(
             str(text or ""),
             duration_scale=controls.duration_scale,
-            sample_rate=int(getattr(self._model, "sample_rate", 0) or 0),
+            sample_rate=self._sample_rate(),
         )
         if duration_s is not None:
             kwargs["duration_s"] = duration_s
