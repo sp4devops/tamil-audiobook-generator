@@ -1,6 +1,7 @@
 # Stage-2 OmniVoice/MLX runtime, local app, and test dependencies
-# Core voice runtime pins were validated on macos-14-arm64 acceptance runs.
-mlx-audio==0.4.8
+# Core voice runtime pins are validated by the Apple-Silicon acceptance workflow.
+# 0.4.6 is the latest mlx-audio release currently published on PyPI.
+mlx-audio==0.4.6
 mlx==0.32.0
 mlx-lm==0.31.3
 transformers==5.15.0
