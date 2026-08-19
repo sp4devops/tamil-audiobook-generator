@@ -124,6 +124,38 @@ test('premium library controls filter, switch views and persist appearance choic
   expect(pageErrors).toEqual([]);
 });
 
+test('premium mobile layout keeps navigation usable and avoids horizontal overflow', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route('**/api/dashboard', route => json(route, dashboard));
+  await page.goto('/');
+
+  await expect(page.locator('#premiumHero')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Home' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Your Library' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Following' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Playlists' })).toBeVisible();
+
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  expect(overflow).toBeLessThanOrEqual(1);
+
+  await page.getByRole('button', { name: 'Your Library' }).click();
+  await expect(page.locator('#libraryToolbar')).toBeVisible();
+  await expect(page.locator('#librarySearch')).toBeVisible();
+
+  await page.locator('[data-book="book-1"]').first().click();
+  await expect(page.locator('#readerView')).toHaveClass(/active-view/);
+  await expect(page.locator('#readerTitle')).toBeVisible();
+  await expect(page.locator('#generateButton')).toBeVisible();
+  await expect(page.locator('#readalong')).toBeVisible();
+
+  const readerOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  expect(readerOverflow).toBeLessThanOrEqual(1);
+  expect(pageErrors).toEqual([]);
+});
+
 test('import failure stays in context and can be retried', async ({ page }) => {
   await page.route('**/api/dashboard', route => json(route, dashboard));
   await page.route('**/api/books/import', route => route.fulfill({
