@@ -4,8 +4,8 @@ from tamil_audiobook.pronunciation import apply_pronunciation_overrides, load_ov
 from tamil_audiobook.prosody import PROSODY_VERSION, prosody_for_chunk
 
 
-def test_p5_prosody_version_is_bumped():
-    assert PROSODY_VERSION >= 2
+def test_p6_prosody_version_is_bumped():
+    assert PROSODY_VERSION >= 3
 
 
 def test_formal_tamil_keeps_neutral_accepted_baseline():
@@ -17,28 +17,64 @@ def test_formal_tamil_keeps_neutral_accepted_baseline():
     assert profile.instruct == "None"
 
 
-def test_colloquial_tamil_gets_native_conversational_delivery():
+def test_colloquial_tamil_english_gets_indian_code_switch_delivery():
     profile = prosody_for_chunk(
         "மச்சி, அந்த server மறுபடியும் down ஆயிடுச்சு டா.",
         "sentence",
     )
     assert profile.name == "mixed-conversational"
-    assert "Tamil-English" in profile.instruct
+    assert "South-Indian English" in profile.instruct
+    assert "American or British accent" in profile.instruct
     assert "same speaker identity" in profile.instruct
 
 
-def test_romanized_tanglish_gets_conversational_delivery():
+def test_romanized_tanglish_gets_indian_code_switch_delivery():
     profile = prosody_for_chunk(
         "Machi, intha query romba slow ah irukku; first check pannalaam.",
         "sentence",
     )
     assert profile.name == "tanglish-conversational"
-    assert "Tanglish" in profile.instruct
+    assert "South-Indian English" in profile.instruct
+    assert "Tamil phrase rhythm" in profile.instruct
 
 
-def test_dialogue_marker_still_has_priority():
+def test_mixed_dialogue_keeps_indian_code_switch_profile():
+    profile = prosody_for_chunk('“டேய், server மீண்டும் down ஆயிடுச்சு.”', "sentence")
+    assert profile.name == "mixed-dialogue"
+    assert "South-Indian English" in profile.instruct
+    assert "same speaker identity" in profile.instruct
+
+
+def test_mixed_question_keeps_indian_code_switch_profile():
+    profile = prosody_for_chunk(
+        "இந்த deploy உண்மையிலேயே safe-ஆ இருக்கா?",
+        "question",
+    )
+    assert profile.name == "mixed-question"
+    assert "Tamil question contour" in profile.instruct
+    assert "American or British accent" in profile.instruct
+
+
+def test_mixed_exclamation_keeps_indian_code_switch_profile():
+    profile = prosody_for_chunk(
+        "அட, deployment live ஆயிடுச்சு!",
+        "exclamation",
+    )
+    assert profile.name == "mixed-exclamation"
+    assert "Tamil conversational cadence" in profile.instruct
+    assert "South-Indian English" in profile.instruct
+
+
+def test_pure_english_question_is_not_forced_into_indian_code_switch_profile():
+    profile = prosody_for_chunk("What happened to the database?", "question")
+    assert profile.name == "question"
+    assert "South-Indian English" not in profile.instruct
+
+
+def test_pure_tamil_dialogue_is_not_forced_into_code_switch_profile():
     profile = prosody_for_chunk('“மச்சி, என்னடா நடந்தது?”', "question")
     assert profile.name == "dialogue"
+    assert "South-Indian English" not in profile.instruct
 
 
 def test_tanglish_tokens_are_normalized_only_for_model_facing_text():

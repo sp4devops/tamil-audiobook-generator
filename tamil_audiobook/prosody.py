@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-PROSODY_VERSION = 2
+PROSODY_VERSION = 3
 
 _LIST_RE = re.compile(r"^(?:[-*•]\s+|\d{1,3}[.)]\s+)")
 _HEADING_RE = re.compile(
@@ -37,6 +37,17 @@ class ProsodyProfile:
 
 
 _NEUTRAL = ProsodyProfile("neutral", "None")
+
+# P6 principle: English embedded inside Tamil/Tanglish must stay inside the same
+# South-Indian bilingual performance. English remains clear and recognisable,
+# but must not trigger a US/UK accent reset or a separate English-speaking voice.
+_INDIAN_CODE_SWITCH = (
+    "Keep one South-Indian Tamil bilingual speaker throughout. "
+    "Pronounce embedded English words in natural South-Indian English, with everyday Indian-English stress and rhythm. "
+    "Do not switch into an American or British accent at English words, and do not over-Tamilize technical English. "
+    "Keep English words clear while preserving the surrounding Tamil phrase rhythm and the same speaker identity."
+)
+
 _PROFILES = {
     "dialogue": ProsodyProfile(
         "dialogue",
@@ -64,11 +75,23 @@ _PROFILES = {
     ),
     "tanglish-conversational": ProsodyProfile(
         "tanglish-conversational",
-        "Natural Tamil-English Tanglish conversation; preserve Tamil rhythm around English words, make code-switches seamless, and keep a lively but restrained native conversational flow; keep the same speaker identity.",
+        "Natural Tamil-English Tanglish conversation; preserve Tamil sentence rhythm and a lively but restrained native conversational flow. " + _INDIAN_CODE_SWITCH,
     ),
     "mixed-conversational": ProsodyProfile(
         "mixed-conversational",
-        "Natural bilingual Tamil-English audiobook speech; keep code-switches inside one continuous phrase, preserve Tamil conversational rhythm around English terms, and avoid a voice or accent reset at language boundaries; keep the same speaker identity.",
+        "Natural bilingual Tamil-English speech; keep every code-switch inside one continuous Tamil phrase. " + _INDIAN_CODE_SWITCH,
+    ),
+    "mixed-dialogue": ProsodyProfile(
+        "mixed-dialogue",
+        "Natural conversational Tamil-English dialogue; follow the punctuation and emotion naturally without acting or changing persona. " + _INDIAN_CODE_SWITCH,
+    ),
+    "mixed-question": ProsodyProfile(
+        "mixed-question",
+        "Natural Tamil-English questioning intonation; keep the Tamil question contour and emphasize contrast or doubt without overacting. " + _INDIAN_CODE_SWITCH,
+    ),
+    "mixed-exclamation": ProsodyProfile(
+        "mixed-exclamation",
+        "Lively but controlled Tamil-English exclamation; preserve the Tamil conversational cadence and do not shout. " + _INDIAN_CODE_SWITCH,
     ),
 }
 
@@ -81,6 +104,17 @@ def _contains_tamil_marker(text: str) -> bool:
 def _contains_tanglish_marker(text: str) -> bool:
     words = {match.group(0).lower().strip("'-") for match in _LATIN_WORD_RE.finditer(text)}
     return bool(words & _TANGLISH_CONVERSATIONAL)
+
+
+def _code_switch_delivery(text: str) -> bool:
+    """Return True when English must stay inside a Tamil/Tanglish accent frame."""
+    has_tamil = bool(_TAMIL_RE.search(text))
+    has_latin = bool(_LATIN_RE.search(text))
+    if has_tamil and has_latin:
+        return True
+    # Romanized Tanglish is all Latin, so high-signal Tamil conversational words
+    # are the conservative cue that this is not ordinary English narration.
+    return not has_tamil and has_latin and _contains_tanglish_marker(text)
 
 
 def _conversational_profile(text: str) -> ProsodyProfile | None:
@@ -101,11 +135,10 @@ def _conversational_profile(text: str) -> ProsodyProfile | None:
 def prosody_for_chunk(text: str, boundary: str) -> ProsodyProfile:
     """Return a conservative OmniVoice instruction for the current speech unit.
 
-    P5 keeps formal narration on the accepted neutral baseline, but no longer
-    treats obvious colloquial Tamil/Tanglish as formal prose. High-signal spoken
-    markers receive a restrained conversational instruction so native rhythm and
-    code-switch continuity can be expressed by OmniVoice without changing the
-    accepted speaker identity settings.
+    P6 keeps pure Tamil and pure English on the established P5 behavior while
+    constraining mixed Tamil-English/Tanglish delivery to one South-Indian
+    bilingual accent frame. This prevents expressive boundaries such as dialogue,
+    questions and exclamations from accidentally restoring a US/UK English accent.
     """
     stripped = str(text or "").strip()
     if not stripped:
@@ -114,16 +147,18 @@ def prosody_for_chunk(text: str, boundary: str) -> ProsodyProfile:
         return _PROFILES["heading"]
     if _LIST_RE.match(stripped):
         return _PROFILES["list"]
-    if _DIALOGUE_RE.match(stripped):
-        return _PROFILES["dialogue"]
 
-    # Explicit punctuation intent remains authoritative over a conversational
-    # style hint. A colloquial question still needs question intonation.
+    code_switch = _code_switch_delivery(stripped)
+    if _DIALOGUE_RE.match(stripped):
+        return _PROFILES["mixed-dialogue"] if code_switch else _PROFILES["dialogue"]
+
+    # Explicit punctuation intent remains authoritative, but P6 uses dedicated
+    # mixed-language variants so question/exclamation prosody cannot reset accent.
     normalized_boundary = str(boundary or "continuation")
     if normalized_boundary == "question":
-        return _PROFILES["question"]
+        return _PROFILES["mixed-question"] if code_switch else _PROFILES["question"]
     if normalized_boundary == "exclamation":
-        return _PROFILES["exclamation"]
+        return _PROFILES["mixed-exclamation"] if code_switch else _PROFILES["exclamation"]
 
     conversational = _conversational_profile(stripped)
     if conversational is not None:
