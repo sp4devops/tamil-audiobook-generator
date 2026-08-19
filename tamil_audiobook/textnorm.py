@@ -8,6 +8,7 @@ _TAMIL_PREBASE = {"\u0BC6", "\u0BC7", "\u0BC8"}  # ெ ே ை
 _TAMIL_BLOCK = range(0x0B80, 0x0C00)
 _ZERO_WIDTH_JUNK = {"\u200b", "\ufeff", "\u2060"}
 _HORIZONTAL_SPACE = {" ", "\t", "\u00a0"}
+_TAMIL_RUN_RE = re.compile(r"[\u0B80-\u0BFF]+")
 
 
 def _is_tamil(ch: str) -> bool:
@@ -33,13 +34,13 @@ def _next_nonspace(chars: list[str], index: int) -> tuple[int, str]:
 
 
 def _looks_visual_order(text: str) -> bool:
-    """Detect a PDF run whose Tamil pre-base signs were extracted in glyph order.
+    """Detect one Tamil word/run extracted in visual glyph order.
 
     Correct Unicode Tamil stores E/EE/AI signs after their base consonant. A
-    visual-order PDF run exposes at least some of those signs at word/run starts
-    (or after virama/punctuation), immediately before a Tamil base. We require a
-    meaningful fraction of suspicious signs before enabling repair so normal
-    Tamil such as `கேளுங்கள்` is not rewritten.
+    visually ordered PDF word exposes at least one such sign before a Tamil base
+    without a Tamil letter immediately before it. Detection is deliberately
+    scoped to a contiguous Tamil run so a damaged word cannot cause a valid word
+    such as ``கேளுங்கள்`` elsewhere on the same line to be rewritten.
     """
     chars = list(text)
     candidates = 0
@@ -57,21 +58,23 @@ def _looks_visual_order(text: str) -> bool:
     return suspicious > 0 and suspicious / max(1, candidates) >= 0.20
 
 
-def _repair_visual_order_run(text: str) -> str:
+def _repair_visual_order_word(text: str) -> str:
     if not _looks_visual_order(text):
         return text
+
+    # Once a single contiguous Tamil word is positively identified as visual
+    # order, all pre-base signs in that word belong before the following glyph.
+    # Moving each sign after that glyph reconstructs logical Unicode order. This
+    # handles words such as ``ேநயர்கேள`` -> ``நேயர்களே`` while leaving a valid
+    # ``கேளுங்கள்`` untouched because that word does not trigger detection.
     chars = list(text)
     out: list[str] = []
     i = 0
     while i < len(chars):
         ch = chars[i]
         if ch in _TAMIL_PREBASE:
-            # Only repair signs that are actually in visual order. A valid Tamil
-            # sign already has its base consonant immediately before it; moving
-            # such a sign would corrupt otherwise-correct words on a mixed line.
-            prev = _previous_nonspace(chars, i)
             j, nxt = _next_nonspace(chars, i)
-            if not _is_tamil_letter(prev) and _is_tamil_letter(nxt):
+            if _is_tamil_letter(nxt):
                 out.append(nxt)
                 out.append(ch)
                 i = j + 1
@@ -81,10 +84,13 @@ def _repair_visual_order_run(text: str) -> str:
     return "".join(out)
 
 
+def _repair_visual_order_run(text: str) -> str:
+    return _TAMIL_RUN_RE.sub(lambda match: _repair_visual_order_word(match.group(0)), text)
+
+
 def _repair_visual_order(text: str) -> str:
-    # PDF encodings are usually stable within a line but can differ between
-    # embedded fonts/pages. Detect per line so one malformed run cannot corrupt
-    # otherwise correct Tamil elsewhere in a book.
+    # PDF encodings can differ between embedded fonts/pages and even between
+    # words on one line. Repair each contiguous Tamil word independently.
     return "\n".join(_repair_visual_order_run(line) for line in text.split("\n"))
 
 
@@ -92,7 +98,7 @@ def normalize_book_text(text: str) -> str:
     """Repair Unicode damage introduced by Tamil PDF text extraction.
 
     The routine preserves already-correct Tamil. It removes extraction-only
-    dotted-circle/zero-width artefacts, detects runs encoded in visual glyph
+    dotted-circle/zero-width artefacts, detects words encoded in visual glyph
     order, restores Unicode logical order, reconnects dependent signs separated
     by horizontal PDF spacing and returns NFC text for both browser display and
     TTS input.
