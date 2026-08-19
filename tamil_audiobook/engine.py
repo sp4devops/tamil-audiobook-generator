@@ -20,7 +20,7 @@ from .speech import classify_language, estimate_spoken_seconds, plan_speech_unit
 MODEL_ID = "mlx-community/OmniVoice-bfloat16"
 # Immutable Hugging Face revision containing the published bfloat16 weights.
 MODEL_REVISION = "c19bf70730272a96dfc3f38d29f59b92c2e8b554"
-ENGINE_CACHE_VERSION = 5
+ENGINE_CACHE_VERSION = 6
 DEFAULT_NUM_STEPS = 20
 DEFAULT_GUIDANCE_SCALE = 2.5
 DEFAULT_CROSSFADE_MS = 55
