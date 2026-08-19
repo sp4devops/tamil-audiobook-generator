@@ -1,0 +1,191 @@
+{
+  "benchmark": "tamil-voice-quality",
+  "version": 1,
+  "description": "Permanent human-listening benchmark for Tamil/English/Tanglish cloned-voice quality. Text is original and intentionally stresses pronunciation, prosody, code switching, names, numbers, dialogue and regional conversational constructions.",
+  "human_gate": true,
+  "required_categories": [
+    "formal_tamil",
+    "colloquial_tamil",
+    "chennai_conversational",
+    "kongu_conversational",
+    "english",
+    "tanglish",
+    "code_switching",
+    "technical",
+    "numbers",
+    "names",
+    "dialogue",
+    "questions",
+    "emotion"
+  ],
+  "cases": [
+    {
+      "id": "formal-ta-01",
+      "category": "formal_tamil",
+      "tags": ["tamil", "formal", "narration"],
+      "text": "தமிழ்மொழியின் செழுமை அதன் இலக்கிய மரபிலும், அன்றாட வாழ்வோடு இணைந்து வளர்ந்த சொல்வளத்திலும் வெளிப்படுகிறது.",
+      "listen_for": ["clear literary Tamil", "stable vowels", "natural sentence cadence"]
+    },
+    {
+      "id": "formal-ta-02",
+      "category": "formal_tamil",
+      "tags": ["tamil", "formal", "long_sentence"],
+      "text": "மழை குறைந்திருந்தாலும், நீர்நிலைகளை பாதுகாப்பது அடுத்த தலைமுறைக்கான பொறுப்பாகும் என்பதைக் கிராம மக்கள் நன்றாக உணர்ந்திருந்தனர்.",
+      "listen_for": ["clause phrasing", "breath grouping", "no rushed ending"]
+    },
+    {
+      "id": "colloquial-ta-01",
+      "category": "colloquial_tamil",
+      "tags": ["tamil", "spoken", "casual"],
+      "text": "என்னடா, இவ்வளவு நேரம் எங்கே போயிருந்தே? ஒரு மெசேஜ் கூட பண்ணலையே!",
+      "listen_for": ["spoken Tamil flow", "question intonation", "natural emphasis"]
+    },
+    {
+      "id": "colloquial-ta-02",
+      "category": "colloquial_tamil",
+      "tags": ["tamil", "spoken", "friendly"],
+      "text": "சரி விடு, நாளைக்கு காலையிலேயே கிளம்பலாம்; அப்போ டிராஃபிக் கொஞ்சம் கம்மியா இருக்கும்.",
+      "listen_for": ["casual reductions", "Tamil-English loanword flow", "steady pacing"]
+    },
+    {
+      "id": "chennai-01",
+      "category": "chennai_conversational",
+      "tags": ["tamil", "chennai", "slang", "dialogue"],
+      "text": "மச்சி, அந்த server மறுபடியும் down ஆயிடுச்சு டா; log பாத்தா timeout தான் அடிக்குது.",
+      "listen_for": ["Chennai-style casual rhythm", "machi/da naturalness", "technical code switch"]
+    },
+    {
+      "id": "chennai-02",
+      "category": "chennai_conversational",
+      "tags": ["tamil", "chennai", "slang", "emotion"],
+      "text": "அட செமயா இருக்கு! ஆனா இவ்வளவு சீக்கிரம் deploy பண்ணிட்டீங்களே, test எல்லாம் முடிஞ்சுதா?",
+      "listen_for": ["restrained excitement", "question rise", "deploy/test pronunciation"]
+    },
+    {
+      "id": "kongu-01",
+      "category": "kongu_conversational",
+      "tags": ["tamil", "kongu", "conversational"],
+      "text": "என்னங்க, இங்கயே உட்காருங்க; காபி குடிச்சுட்டு அப்புறம் போய்ட்டு வாங்க.",
+      "listen_for": ["warm conversational cadence", "ங்க politeness ending", "no over-formal delivery"]
+    },
+    {
+      "id": "kongu-02",
+      "category": "kongu_conversational",
+      "tags": ["tamil", "kongu", "rural_conversational"],
+      "text": "எங்க ஊர்ல இப்படி மழை வந்தா, காலையிலேயே தோட்டத்துக்குப் போய்ப் பாத்துட்டு வருவோம்.",
+      "listen_for": ["regional conversational construction", "smooth compound verbs", "natural rural narration"]
+    },
+    {
+      "id": "english-01",
+      "category": "english",
+      "tags": ["english", "narration"],
+      "text": "The service recovered after the database connection pool was resized, but we still need to understand the original bottleneck.",
+      "listen_for": ["same speaker identity", "natural English stress", "technical clarity"]
+    },
+    {
+      "id": "english-02",
+      "category": "english",
+      "tags": ["english", "question"],
+      "text": "Are we certain this change fixes the root cause, or are we only hiding the symptom for a few hours?",
+      "listen_for": ["question intonation", "same speaker identity", "contrast emphasis"]
+    },
+    {
+      "id": "tanglish-01",
+      "category": "tanglish",
+      "tags": ["tanglish", "romanized_tamil"],
+      "text": "Machi, intha query romba slow ah irukku; index add panna performance improve aaguma nu first check pannalaam.",
+      "listen_for": ["Romanized Tamil pronunciation", "English technical words", "single speaker identity"]
+    },
+    {
+      "id": "tanglish-02",
+      "category": "tanglish",
+      "tags": ["tanglish", "casual"],
+      "text": "Seri, naan backup eduthuttu varen; nee meanwhile deployment notes ready pannidu.",
+      "listen_for": ["Tanglish rhythm", "meanwhile/deployment pronunciation", "natural imperative"]
+    },
+    {
+      "id": "codeswitch-01",
+      "category": "code_switching",
+      "tags": ["tamil", "english", "mixed_script"],
+      "text": "இந்த API response சரியா இருக்கு, but PostgreSQL query மட்டும் இன்னும் slow ஆகுது.",
+      "listen_for": ["seamless Tamil-English switch", "API/PostgreSQL pronunciation", "no voice change"]
+    },
+    {
+      "id": "codeswitch-02",
+      "category": "code_switching",
+      "tags": ["tamil", "english", "multiple_switches"],
+      "text": "நாளைக்கு production deploy இருக்கு, so இன்று evening குள்ள rollback plan மற்றும் monitoring dashboard ready ஆகணும்.",
+      "listen_for": ["multiple code switches", "consistent timbre", "correct phrase grouping"]
+    },
+    {
+      "id": "technical-01",
+      "category": "technical",
+      "tags": ["mongodb", "postgresql", "kubernetes", "api"],
+      "text": "MongoDB, PostgreSQL, Kubernetes, API, CPU, GPU, RAM, MLX, OmniVoice — ஒவ்வொரு technical term-மும் தெளிவாகவும் ஒரே குரலிலும் இருக்க வேண்டும்.",
+      "listen_for": ["pronunciation overrides", "acronym clarity", "no language-triggered speaker drift"]
+    },
+    {
+      "id": "technical-02",
+      "category": "technical",
+      "tags": ["devops", "networking", "database"],
+      "text": "Traefik route சரியா இருந்தாலும், RabbitMQ connection timeout மற்றும் Elasticsearch heap pressure இரண்டையும் தனித்தனியாக verify பண்ணணும்.",
+      "listen_for": ["product names", "Tamil inflection around English", "technical pacing"]
+    },
+    {
+      "id": "numbers-01",
+      "category": "numbers",
+      "tags": ["numbers", "currency", "percentage", "time"],
+      "text": "மொத்த செலவு ₹19,869; memory usage 2.75 GB; success rate 99.5%; meeting காலை 10:30க்கு தொடங்கும்.",
+      "listen_for": ["number reading", "currency", "decimal", "percentage", "clock time"]
+    },
+    {
+      "id": "numbers-02",
+      "category": "numbers",
+      "tags": ["dates", "versions", "ports"],
+      "text": "Version 5.0 இலிருந்து 6.0க்கு upgrade செய்யும் முன், port 27017 மற்றும் 443 இரண்டையும் August 19, 2026 அன்று மீண்டும் சரிபார்க்கவும்.",
+      "listen_for": ["version numbers", "port numbers", "date", "English-Tamil transitions"]
+    },
+    {
+      "id": "names-01",
+      "category": "names",
+      "tags": ["person_names", "place_names"],
+      "text": "செதுபதி, அருண், பிரியா, கோயம்புத்தூர், ஈரோடு, சென்னை, Bengaluru, San Francisco — பெயர்கள் தெளிவாக வேறுபட வேண்டும்.",
+      "listen_for": ["Tamil names", "Indian place names", "English place names", "stable identity"]
+    },
+    {
+      "id": "dialogue-01",
+      "category": "dialogue",
+      "tags": ["dialogue", "two_turns", "question"],
+      "text": "“என்ன நடந்தது?”\n“Server மீண்டும் down ஆயிடுச்சு; ஆனா data safe-ஆ இருக்கு.”",
+      "listen_for": ["turn separation", "question prosody", "same narrator identity", "pause between turns"]
+    },
+    {
+      "id": "dialogue-02",
+      "category": "dialogue",
+      "tags": ["dialogue", "english", "tamil"],
+      "text": "“Did the backup finish?”\n“ஆமாம், backup முடிஞ்சுது. Restore test மட்டும் இன்னும் pending.”",
+      "listen_for": ["bilingual dialogue", "turn boundaries", "backup/restore pronunciation"]
+    },
+    {
+      "id": "question-01",
+      "category": "questions",
+      "tags": ["tamil", "question", "skeptical"],
+      "text": "இந்த fix உண்மையிலேயே root cause-ஐ சரி செய்கிறதா, இல்ல temporary-ஆ problem-ஐ மறைக்கிறதா?",
+      "listen_for": ["skeptical question contour", "contrast", "root cause pronunciation"]
+    },
+    {
+      "id": "emotion-01",
+      "category": "emotion",
+      "tags": ["relief", "tamil"],
+      "text": "அப்பாடா, இறுதியாக system stable ஆயிடுச்சு; இப்போதான் கொஞ்சம் நிம்மதியாக இருக்கு.",
+      "listen_for": ["relief without acting", "natural sigh-like cadence", "speaker identity"]
+    },
+    {
+      "id": "emotion-02",
+      "category": "emotion",
+      "tags": ["urgency", "tamil", "english"],
+      "text": "இது production data! உடனே deployment stop பண்ணுங்க; backup verify பண்ணாமல் அடுத்த step போகாதீங்க!",
+      "listen_for": ["controlled urgency", "exclamation emphasis", "no shouting distortion", "technical clarity"]
+    }
+  ]
+}
