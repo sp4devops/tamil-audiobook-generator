@@ -15,12 +15,13 @@ import numpy as np
 import soundfile as sf
 
 from .pronunciation import apply_pronunciation_overrides, load_overrides, override_signature
+from .prosody import PROSODY_VERSION, prosody_for_chunk
 from .speech import classify_language, estimate_spoken_seconds, plan_speech_units
 
 MODEL_ID = "mlx-community/OmniVoice-bfloat16"
 # Immutable Hugging Face revision containing the published bfloat16 weights.
 MODEL_REVISION = "c19bf70730272a96dfc3f38d29f59b92c2e8b554"
-ENGINE_CACHE_VERSION = 6
+ENGINE_CACHE_VERSION = 7
 DEFAULT_NUM_STEPS = 20
 DEFAULT_GUIDANCE_SCALE = 2.5
 DEFAULT_CROSSFADE_MS = 55
@@ -182,7 +183,7 @@ def _checkpoint_key(
     digest.update(text.encode("utf-8")); digest.update(b"\0")
     digest.update(reference_text.encode("utf-8")); digest.update(b"\0")
     digest.update(reference_audio.read_bytes())
-    digest.update((f"cache={ENGINE_CACHE_VERSION}|model={MODEL_ID}@{MODEL_REVISION}|mlx-audio={_mlx_audio_version()}|steps={num_steps}|guidance={guidance_scale}|crossfade={crossfade_ms}|target={target_chars}|max={max_chars}|pronunciation={pronunciation_signature}").encode("utf-8"))
+    digest.update((f"cache={ENGINE_CACHE_VERSION}|model={MODEL_ID}@{MODEL_REVISION}|mlx-audio={_mlx_audio_version()}|steps={num_steps}|guidance={guidance_scale}|crossfade={crossfade_ms}|target={target_chars}|max={max_chars}|pronunciation={pronunciation_signature}|prosody={PROSODY_VERSION}").encode("utf-8"))
     return digest.hexdigest()
 
 
@@ -196,7 +197,7 @@ def _prepare_checkpoint_dir(checkpoint_dir: Path, key: str, total_chunks: int) -
     if not current or current.get("key") != key or int(current.get("total_chunks", -1)) != total_chunks:
         shutil.rmtree(checkpoint_dir, ignore_errors=True)
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(json.dumps({"key": key, "total_chunks": total_chunks, "cache_version": ENGINE_CACHE_VERSION, "model_id": MODEL_ID, "model_revision": MODEL_REVISION, "mlx_audio_version": _mlx_audio_version()}, indent=2), encoding="utf-8")
+        manifest_path.write_text(json.dumps({"key": key, "total_chunks": total_chunks, "cache_version": ENGINE_CACHE_VERSION, "model_id": MODEL_ID, "model_revision": MODEL_REVISION, "mlx_audio_version": _mlx_audio_version(), "prosody_version": PROSODY_VERSION}, indent=2), encoding="utf-8")
     else:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
     contiguous = 0
@@ -349,6 +350,7 @@ def synthesize_audiobook(
     try:
         for index, chunk in enumerate(chunks):
             prepared = apply_pronunciation_overrides(chunk.text, pronunciation_overrides)
+            prosody = prosody_for_chunk(chunk.text, chunk.boundary)
             checkpoint = checkpoint_dir / f"chunk_{index:05d}.flac" if checkpoint_dir is not None else None
             cached = bool(checkpoint is not None and checkpoint.is_file() and checkpoint.stat().st_size >= 256)
             if cached:
@@ -356,7 +358,7 @@ def synthesize_audiobook(
             else:
                 if model is None or ref_tokens is None: raise RuntimeError("voice model was not loaded for a missing chunk")
                 started = time.perf_counter()
-                results = list(model.generate(text=prepared.text, language=chunk.language, ref_tokens=ref_tokens, ref_text=reference_text, num_steps=num_steps, guidance_scale=guidance_scale))
+                results = list(model.generate(text=prepared.text, language=chunk.language, instruct=prosody.instruct, ref_tokens=ref_tokens, ref_text=reference_text, num_steps=num_steps, guidance_scale=guidance_scale))
                 elapsed = time.perf_counter() - started
                 if not results: raise RuntimeError(f"no audio returned for chunk {index}")
                 result = results[-1]; audio = _to_numpy(result.audio); current_rate = int(getattr(result, "sample_rate", 0) or getattr(model, "sample_rate", 0))
@@ -398,6 +400,8 @@ def synthesize_audiobook(
                 "language": chunk.language,
                 "speech_profile": chunk.speech_profile,
                 "boundary": chunk.boundary,
+                "narration_style": prosody.name,
+                "narration_instruct": prosody.instruct,
                 "pause_before_ms": pause_before_ms,
                 "audio_start": round(audio_start, 3),
                 "audio_end": round(audio_end, 3),
@@ -432,6 +436,7 @@ def synthesize_audiobook(
         "model_id": MODEL_ID,
         "model_revision": MODEL_REVISION,
         "engine_cache_version": ENGINE_CACHE_VERSION,
+        "prosody_version": PROSODY_VERSION,
         "mlx_audio_version": _mlx_audio_version(),
         "num_steps": num_steps,
         "guidance_scale": guidance_scale,
