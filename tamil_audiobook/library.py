@@ -338,11 +338,17 @@ class LocalLibrary:
         cursor = 0.0
         cues: list[dict[str, Any]] = []
         for index, (chunk, timing) in enumerate(zip(chunks, chunk_reports)):
-            duration = float(timing["audio_seconds"])
-            end = cursor + duration
+            if "audio_start" in timing and "audio_end" in timing:
+                start = float(timing["audio_start"])
+                end = float(timing["audio_end"])
+            else:
+                # Backward compatibility for reports created before the
+                # boundary-aware stitcher recorded absolute chunk timestamps.
+                start = cursor
+                end = start + float(timing["audio_seconds"])
             cues.append({
                 "index": index,
-                "start": round(cursor, 3),
+                "start": round(start, 3),
                 "end": round(end, 3),
                 "text": chunk.text,
                 "language": chunk.language,
