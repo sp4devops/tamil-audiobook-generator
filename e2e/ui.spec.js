@@ -71,15 +71,42 @@ test('library opens reader and progressive lifecycle without browser errors', as
   await expect(page.getByRole('heading', { name: 'Good listening' })).toBeVisible();
   await expect(page.getByText('Tamil E2E Book').first()).toBeVisible();
   await expect(page.getByText('✓ Original source voice is configured locally.')).toBeAttached();
+  await expect(page.locator('#homeVoiceStatus')).toHaveText('Voice ready');
+  await expect(page.locator('#homeGenerationStatus')).toHaveText('Generation idle');
 
   await page.locator('[data-book="book-1"]').first().click();
   await expect(page.locator('#readerView')).toHaveClass(/active-view/);
   await expect(page.locator('#readerTitle')).toHaveText('Tamil E2E Book');
   await expect(page.locator('#readalong')).toContainText('browser lifecycle smoke test');
+  await expect(page.locator('#readerVoiceState')).toContainText('Voice ready');
+  await expect(page.locator('#advancedSound')).not.toHaveAttribute('open', '');
   await expect(page.locator('#exportAudio')).toBeDisabled();
 
   await page.locator('#settingsButton').click();
   await expect(page.locator('#settingsDialog')).toHaveAttribute('open', '');
 
   expect(pageErrors).toEqual([]);
+});
+
+test('import failure stays in context and can be retried', async ({ page }) => {
+  await page.route('**/api/dashboard', route => json(route, dashboard));
+  await page.route('**/api/books/import', route => route.fulfill({
+    status: 400,
+    contentType: 'application/json',
+    body: JSON.stringify({ detail: 'Unsupported or unreadable book file' }),
+  }));
+
+  await page.goto('/');
+  await page.locator('#importButton').click();
+  await page.locator('#dialogBookFile').setInputFiles({
+    name: 'broken.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('not a real book'),
+  });
+  await expect(page.locator('#importTitle')).toHaveValue('broken');
+  await page.locator('#confirmImport').click();
+
+  await expect(page.locator('#importDialog')).toHaveAttribute('open', '');
+  await expect(page.locator('#importStatus')).toContainText('Unsupported or unreadable book file');
+  await expect(page.locator('#confirmImport')).toBeEnabled();
 });
