@@ -12,7 +12,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tamil_audiobook.engine import DEFAULT_GUIDANCE_SCALE, synthesize_audiobook
+from tamil_audiobook.controlled_engine import synthesize_audiobook_with_controls
+from tamil_audiobook.engine import DEFAULT_GUIDANCE_SCALE
+from tamil_audiobook.generation_controls import (
+    DEFAULT_CLASS_TEMPERATURE,
+    DEFAULT_LAYER_PENALTY_FACTOR,
+    DEFAULT_POSITION_TEMPERATURE,
+    DEFAULT_T_SHIFT,
+    OmniVoiceGenerationControls,
+)
 
 
 def main() -> int:
@@ -26,11 +34,38 @@ def main() -> int:
     parser.add_argument("--checkpoint-dir", type=Path, help="Persist generated chunks here so interrupted long books can resume")
     parser.add_argument("--num-steps", type=int, default=20)
     parser.add_argument("--guidance-scale", type=float, default=DEFAULT_GUIDANCE_SCALE)
+
+    quality = parser.add_argument_group("OmniVoice quality controls")
+    quality.add_argument(
+        "--narration-style",
+        choices=("auto", "neutral", "audiobook"),
+        default="auto",
+        help="auto keeps semantic P3 prosody, neutral disables instructions, audiobook also styles neutral narration",
+    )
+    quality.add_argument(
+        "--duration-scale",
+        type=float,
+        help="Opt-in native duration multiplier: <1.0 shorter/faster, >1.0 longer/slower; allowed 0.75..1.35",
+    )
+    quality.add_argument("--class-temperature", type=float, default=DEFAULT_CLASS_TEMPERATURE)
+    quality.add_argument("--position-temperature", type=float, default=DEFAULT_POSITION_TEMPERATURE)
+    quality.add_argument("--layer-penalty-factor", type=float, default=DEFAULT_LAYER_PENALTY_FACTOR)
+    quality.add_argument("--t-shift", type=float, default=DEFAULT_T_SHIFT)
     args = parser.parse_args()
+
+    controls = OmniVoiceGenerationControls(
+        narration_style=args.narration_style,
+        duration_scale=args.duration_scale,
+        class_temperature=args.class_temperature,
+        position_temperature=args.position_temperature,
+        layer_penalty_factor=args.layer_penalty_factor,
+        t_shift=args.t_shift,
+    ).validated()
 
     text = args.text_file.read_text(encoding="utf-8")
     reference_text = args.reference_text_file.read_text(encoding="utf-8").strip()
-    report = synthesize_audiobook(
+    report = synthesize_audiobook_with_controls(
+        controls=controls,
         text=text,
         reference_audio=args.reference,
         reference_text=reference_text,
@@ -49,6 +84,7 @@ def main() -> int:
         "guidance_scale": report["guidance_scale"],
         "chunks": report["chunks"],
         "resumed_chunks": report.get("resumed_chunks", 0),
+        "omnivoice_controls": report.get("omnivoice_controls", {}),
     }, separators=(",", ":")))
     return 0
 
