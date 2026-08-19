@@ -61,7 +61,22 @@ jobs:
             fastapi==0.141.1 \
             python-multipart==0.0.32 \
             pypdf==6.15.0 \
-            ruff==0.12.10
+            ruff==0.12.10 \
+            imageio-ffmpeg==0.6.0
+          mkdir -p "$HOME/.local/bin"
+          python - <<'PY'
+          import os
+          import shutil
+          from pathlib import Path
+          import imageio_ffmpeg
+
+          source = Path(imageio_ffmpeg.get_ffmpeg_exe())
+          target = Path.home() / ".local" / "bin" / "ffmpeg"
+          shutil.copy2(source, target)
+          target.chmod(0o755)
+          with open(os.environ["GITHUB_PATH"], "a", encoding="utf-8") as handle:
+              handle.write(str(target.parent) + "\n")
+          PY
 
       - name: Lint Python
         shell: bash
@@ -73,5 +88,5 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          command -v ffmpeg
+          ffmpeg -version | head -n 1
           python -m pytest tests
