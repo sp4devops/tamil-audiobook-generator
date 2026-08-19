@@ -9,6 +9,7 @@ PRIVATE_ROOT="$LIBRARY_ROOT/private"
 AUDIO_TARGET="$PRIVATE_ROOT/voice_reference.wav"
 TEXT_TARGET="$PRIVATE_ROOT/voice_reference.txt"
 MARKER_TARGET="$PRIVATE_ROOT/accepted_c_reference.json"
+MANUAL_MARKER="$PRIVATE_ROOT/manual_voice_reference.json"
 EXPECTED_GITHUB_USER="sp4devops"
 STAGE1_REPO="sp4devops/tamil-voice-clone"
 ACCEPTED_RUN_ID="31974866774"
@@ -27,6 +28,13 @@ if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
   fail "The accepted Stage-2 voice loader targets Apple Silicon macOS."
 fi
 
+# A voice explicitly configured by the user is an intentional product override.
+# Setup/startup must never silently replace it with the bundled Candidate-C profile.
+if [[ -s "$AUDIO_TARGET" && -s "$TEXT_TARGET" && -s "$MANUAL_MARKER" ]]; then
+  log "Manual local voice override is configured; leaving it unchanged."
+  exit 0
+fi
+
 command -v brew >/dev/null 2>&1 || fail "Homebrew is required. Install Homebrew first, then rerun this script."
 
 missing=()
@@ -35,7 +43,7 @@ command -v ffmpeg >/dev/null 2>&1 || missing+=(ffmpeg)
 command -v ffprobe >/dev/null 2>&1 || missing+=(ffmpeg)
 if ((${#missing[@]})); then
   packages=()
-  for item in "${missing[@]}"; do
+  for item in "${missing[@]:-}"; do
     seen=0
     for existing in "${packages[@]:-}"; do
       [[ "$existing" == "$item" ]] && seen=1
@@ -54,7 +62,7 @@ fi
 GITHUB_USER="$(gh api user --jq .login 2>/dev/null || true)"
 [[ "$GITHUB_USER" == "$EXPECTED_GITHUB_USER" ]] || fail "GitHub CLI must be authenticated as '$EXPECTED_GITHUB_USER' (current: '${GITHUB_USER:-unknown}')."
 
-# Only trust an existing local reference when it carries the exact Candidate-C marker.
+# Only trust an automatic reference when it carries the exact Candidate-C marker.
 if [[ -s "$AUDIO_TARGET" && -s "$TEXT_TARGET" && -s "$MARKER_TARGET" ]]; then
   if python3 - "$MARKER_TARGET" "$ACCEPTED_RUN_ID" <<'PY'
 import json, sys
@@ -116,6 +124,7 @@ mkdir -p "$PRIVATE_ROOT"
 chmod 700 "$PRIVATE_ROOT"
 install -m 600 "$TMP_ROOT/reference.wav" "$AUDIO_TARGET"
 install -m 600 "$TMP_ROOT/reference.txt" "$TEXT_TARGET"
+rm -f "$MANUAL_MARKER"
 python3 - "$MARKER_TARGET" "$ACCEPTED_RUN_ID" "$ACCEPTED_ARTIFACT" <<'PY'
 import json, sys
 from pathlib import Path
@@ -130,8 +139,8 @@ Path(sys.argv[1]).write_text(json.dumps({
 PY
 chmod 600 "$MARKER_TARGET"
 
-# Audio generated under the previous 4-second reference is invalid. Remove it so
-# ListenLeaf cannot accidentally replay stale garbled chunks or completed MP3s.
+# Audio generated under the previous reference is invalid. Remove it so ListenLeaf
+# cannot accidentally replay stale chunks or completed MP3s after the voice change.
 BOOKS_ROOT="$LIBRARY_ROOT/books"
 invalidated=0
 if [[ -d "$BOOKS_ROOT" ]]; then
@@ -152,5 +161,5 @@ if [[ -d "$BOOKS_ROOT" ]]; then
 fi
 
 log "Human-approved Candidate-C reference is installed locally."
-log "The old 4-second original-source reference has been replaced for Stage-2 synthesis."
+log "The legacy short source reference has been replaced for Stage-2 synthesis."
 log "Invalidated stale generated audio for $invalidated book(s)."
