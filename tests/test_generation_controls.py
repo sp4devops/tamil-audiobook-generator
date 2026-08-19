@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from tamil_audiobook.controlled_engine import _ControlledModel
@@ -122,3 +124,36 @@ def test_audiobook_style_only_fills_neutral_instruction():
     controlled2 = _ControlledModel(fake2, OmniVoiceGenerationControls(narration_style="audiobook"))
     list(controlled2.generate(text="Question?", instruct="Question instruction"))
     assert fake2.calls[0][1]["instruct"] == "Question instruction"
+
+
+def test_duration_scale_uses_config_sample_rate_when_model_has_no_direct_attribute(monkeypatch):
+    class ConfigOnlyModel:
+        config = SimpleNamespace(sample_rate=24000)
+
+        def __init__(self):
+            self.calls = []
+
+        def generate(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return iter(())
+
+    captured = {}
+
+    def fake_scaled_duration_seconds(text, *, duration_scale, sample_rate):
+        captured.update(text=text, duration_scale=duration_scale, sample_rate=sample_rate)
+        return 3.25
+
+    monkeypatch.setattr(
+        "tamil_audiobook.controlled_engine.scaled_duration_seconds",
+        fake_scaled_duration_seconds,
+    )
+    fake = ConfigOnlyModel()
+    controlled = _ControlledModel(fake, OmniVoiceGenerationControls(duration_scale=0.9))
+    list(controlled.generate(text="தமிழ் benchmark sentence."))
+
+    assert captured == {
+        "text": "தமிழ் benchmark sentence.",
+        "duration_scale": 0.9,
+        "sample_rate": 24000,
+    }
+    assert fake.calls[0][1]["duration_s"] == 3.25
