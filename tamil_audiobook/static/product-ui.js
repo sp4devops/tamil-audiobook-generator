@@ -20,11 +20,11 @@
   function showNotice(message, kind = 'info', timeout = 4200) {
     const notice = el('appNotice');
     if (!notice) return;
-    window.clearTimeout(productState.noticeTimer);
+    clearTimeout(productState.noticeTimer);
     notice.textContent = message;
     notice.dataset.kind = kind;
     notice.classList.remove('hidden');
-    productState.noticeTimer = window.setTimeout(() => notice.classList.add('hidden'), timeout);
+    productState.noticeTimer = setTimeout(() => notice.classList.add('hidden'), timeout);
   }
 
   function statusClass(target, value) {
@@ -40,51 +40,56 @@
   }
 
   function progressFor(book) {
-    const p = book?.progress || {};
-    if (!Number(p.duration)) return 0;
-    return Math.max(0, Math.min(100, Number(p.seconds || 0) / Number(p.duration) * 100));
+    const progress = book?.progress || {};
+    if (!Number(progress.duration)) return 0;
+    return Math.max(0, Math.min(100, Number(progress.seconds || 0) / Number(progress.duration) * 100));
   }
 
-  function enhanceBookSurfaces() {
-    const books = new Map((state?.dashboard?.books || productState.dashboard?.books || []).map(book => [String(book.id), book]));
+  function currentBooks() {
+    return state?.dashboard?.books || productState.dashboard?.books || [];
+  }
 
-    document.querySelectorAll('.book-card[data-book]').forEach(card => {
-      const book = books.get(String(card.dataset.book));
-      if (!book) return;
-      card.dataset.ready = book.has_audio ? 'true' : 'false';
-      card.style.setProperty('--cover-hue', hashHue(book.title));
-      const cover = card.querySelector('.cover');
-      if (cover) cover.style.setProperty('--cover-hue', hashHue(book.title));
-      if (!card.querySelector('.book-badge')) {
-        const badge = document.createElement('span');
-        badge.className = 'book-badge';
-        badge.textContent = book.has_audio ? 'AUDIO READY' : String(book.source_format || 'TEXT').toUpperCase();
-        cover?.appendChild(badge);
-      } else {
-        card.querySelector('.book-badge').textContent = book.has_audio ? 'AUDIO READY' : String(book.source_format || 'TEXT').toUpperCase();
-      }
-      let label = card.querySelector('.book-progress-label');
-      if (!label) {
-        label = document.createElement('span');
-        label.className = 'book-progress-label';
-        card.appendChild(label);
-      }
-      const pct = progressFor(book);
-      label.textContent = pct > 0 ? `${Math.round(pct)}% listened` : (book.has_audio ? 'Ready to play' : 'Ready to generate');
-    });
+  function decorateCard(cardEl, book) {
+    if (!cardEl || !book) return;
+    cardEl.dataset.ready = book.has_audio ? 'true' : 'false';
+    cardEl.style.setProperty('--cover-hue', hashHue(book.title));
+    const cover = cardEl.querySelector('.cover');
+    cover?.style.setProperty('--cover-hue', hashHue(book.title));
 
-    document.querySelectorAll('.library-row[data-book]').forEach(row => {
-      const book = books.get(String(row.dataset.book));
-      if (!book) return;
-      row.dataset.ready = book.has_audio ? 'true' : 'false';
-      row.dataset.search = `${book.title || ''} ${book.author || ''} ${book.series || ''}`.toLowerCase();
-      const cover = row.querySelector('.row-cover');
-      cover?.style.setProperty('--cover-hue', hashHue(book.title));
-      const last = row.lastElementChild;
-      if (last && !last.querySelector('[data-play-book]')) last.innerHTML = `<span class="row-status">${book.has_audio ? 'Audio ready' : 'Text only'}</span>`;
-    });
-    applyLibraryFilter();
-    rebuildPremiumGrid();
+    let badge = cardEl.querySelector('.book-badge');
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'book-badge';
+      cover?.appendChild(badge);
+    }
+    badge.textContent = book.has_audio ? 'AUDIO READY' : String(book.source_format || 'TEXT').toUpperCase();
+
+    let label = cardEl.querySelector('.book-progress-label');
+    if (!label) {
+      label = document.createElement('span');
+      label.className = 'book-progress-label';
+      cardEl.appendChild(label);
+    }
+    const pct = progressFor(book);
+    label.textContent = pct > 0 ? `${Math.round(pct)}% listened` : (book.has_audio ? 'Ready to play' : 'Ready to generate');
+  }
+
+  function decorateRow(row, book) {
+    if (!row || !book) return;
+    row.dataset.ready = book.has_audio ? 'true' : 'false';
+    row.dataset.search = `${book.title || ''} ${book.author || ''} ${book.series || ''}`.toLowerCase();
+    row.querySelector('.row-cover')?.style.setProperty('--cover-hue', hashHue(book.title));
+    const last = row.lastElementChild;
+    if (last && !last.querySelector('[data-play-book]')) {
+      last.innerHTML = `<span class="row-status">${book.has_audio ? 'Audio ready' : 'Text only'}</span>`;
+    }
+  }
+
+  function decorateCurrentSurfaces() {
+    const books = new Map(currentBooks().map(book => [String(book.id), book]));
+    document.querySelectorAll('.book-card[data-book]').forEach(cardEl => decorateCard(cardEl, books.get(String(cardEl.dataset.book))));
+    document.querySelectorAll('.library-row[data-book]').forEach(row => decorateRow(row, books.get(String(row.dataset.book))));
+    applyLibraryFilter(false);
   }
 
   function createHero() {
@@ -117,9 +122,8 @@
   }
 
   function createLibraryToolbar() {
-    const view = el('libraryView');
     const list = el('libraryList');
-    if (!view || !list || el('libraryToolbar')) return;
+    if (!list || el('libraryToolbar')) return;
     const toolbar = document.createElement('div');
     toolbar.id = 'libraryToolbar';
     toolbar.className = 'library-toolbar';
@@ -130,10 +134,12 @@
         <button id="libraryGridMode" type="button" title="Grid view">▦<span>Grid</span></button>
       </div>`;
     list.before(toolbar);
+
     const grid = document.createElement('div');
     grid.id = 'premiumLibraryGrid';
     grid.className = 'premium-library-grid card-grid';
     list.after(grid);
+
     el('librarySearch')?.addEventListener('input', event => {
       productState.libraryQuery = event.target.value.trim().toLowerCase();
       applyLibraryFilter();
@@ -143,17 +149,15 @@
     setLibraryMode(productState.libraryMode, false);
   }
 
-  function rebuildPremiumGrid() {
+  function renderPremiumGrid() {
     const grid = el('premiumLibraryGrid');
     if (!grid || productState.libraryMode !== 'grid') return;
-    const source = state?.dashboard?.books || productState.dashboard?.books || [];
     const query = productState.libraryQuery;
-    grid.innerHTML = source
-      .filter(book => !query || `${book.title || ''} ${book.author || ''} ${book.series || ''}`.toLowerCase().includes(query))
-      .map(card)
-      .join('');
+    const books = currentBooks().filter(book => !query || `${book.title || ''} ${book.author || ''} ${book.series || ''}`.toLowerCase().includes(query));
+    grid.innerHTML = books.map(card).join('');
     wireDynamic();
-    queueMicrotask(enhanceBookSurfaces);
+    const byId = new Map(books.map(book => [String(book.id), book]));
+    grid.querySelectorAll('.book-card[data-book]').forEach(cardEl => decorateCard(cardEl, byId.get(String(cardEl.dataset.book))));
   }
 
   function setLibraryMode(mode, persist = true) {
@@ -163,16 +167,17 @@
     el('libraryGridMode')?.classList.toggle('active', productState.libraryMode === 'grid');
     el('libraryList')?.classList.toggle('view-hidden', productState.libraryMode !== 'list');
     el('premiumLibraryGrid')?.classList.toggle('active', productState.libraryMode === 'grid');
-    if (productState.libraryMode === 'grid') rebuildPremiumGrid();
-    else applyLibraryFilter();
+    if (productState.libraryMode === 'grid') renderPremiumGrid();
+    else applyLibraryFilter(false);
   }
 
-  function applyLibraryFilter() {
+  function applyLibraryFilter(renderGrid = true) {
     const query = productState.libraryQuery;
     document.querySelectorAll('#libraryList .library-row').forEach(row => {
-      row.classList.toggle('hidden', !!query && !(row.dataset.search || row.textContent.toLowerCase()).includes(query));
+      const haystack = row.dataset.search || row.textContent.toLowerCase();
+      row.classList.toggle('hidden', !!query && !haystack.includes(query));
     });
-    if (productState.libraryMode === 'grid') rebuildPremiumGrid();
+    if (renderGrid && productState.libraryMode === 'grid') renderPremiumGrid();
   }
 
   function createAppearanceEnhancer() {
@@ -193,8 +198,6 @@
     enhancer.querySelectorAll('.accent-swatch').forEach(button => button.addEventListener('click', () => setAccent(button.dataset.accent)));
     el('densityComfortable')?.addEventListener('click', () => setDensity('comfortable'));
     el('densityCompact')?.addEventListener('click', () => setDensity('compact'));
-    setAccent(productState.accent, false);
-    setDensity(productState.density, false);
   }
 
   function setAccent(accent, persist = true) {
@@ -290,7 +293,8 @@
     updateVoiceStatus(dashboard);
     updateGenerationStatus(dashboard);
     updateReaderGenerationGate(dashboard);
-    enhanceBookSurfaces();
+    decorateCurrentSurfaces();
+    if (productState.libraryMode === 'grid') renderPremiumGrid();
   }
 
   async function refreshProductStatus() {
@@ -328,7 +332,7 @@
     const hint = el('importFileHint');
     const title = el('importTitle');
     const status = el('importStatus');
-    if (status) status.classList.add('hidden');
+    status?.classList.add('hidden');
     if (!file) {
       if (hint) hint.textContent = 'PDF, TXT or Markdown';
       return;
@@ -364,7 +368,7 @@
       try {
         await api('/api/books/import', { method: 'POST', body: fd });
         importForm.reset();
-        if (status) status.classList.add('hidden');
+        status?.classList.add('hidden');
         el('importDialog')?.close();
         await refresh();
         await refreshProductStatus();
@@ -385,7 +389,16 @@
     };
   }
 
-  const booksObserver = new MutationObserver(() => queueMicrotask(enhanceBookSurfaces));
+  let decorationQueued = false;
+  const queueDecoration = () => {
+    if (decorationQueued) return;
+    decorationQueued = true;
+    requestAnimationFrame(() => {
+      decorationQueued = false;
+      decorateCurrentSurfaces();
+    });
+  };
+  const booksObserver = new MutationObserver(queueDecoration);
   if (el('bookGrid')) booksObserver.observe(el('bookGrid'), { childList: true });
   if (el('continueGrid')) booksObserver.observe(el('continueGrid'), { childList: true });
   if (el('libraryList')) booksObserver.observe(el('libraryList'), { childList: true });
@@ -408,7 +421,7 @@
   });
 
   refreshProductStatus();
-  productState.statusTimer = window.setInterval(() => {
+  productState.statusTimer = setInterval(() => {
     if (!document.hidden) refreshProductStatus();
   }, 3000);
 })();
