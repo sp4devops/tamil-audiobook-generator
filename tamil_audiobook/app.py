@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import tempfile
 import threading
 import time
 import uuid
@@ -12,8 +11,18 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from .api_models import (
+    BookEditRequest,
+    FollowRequest,
+    PlaylistCreateRequest,
+    PlaylistUpdateRequest,
+    PreferencesRequest,
+    ProgressRequest,
+    ResetRequest,
+)
 from .engine import DEFAULT_GUIDANCE_SCALE, DEFAULT_NUM_STEPS, estimate_audiobook, synthesize_audiobook
 from .library import LocalLibrary
+from .uploads import BOOK_UPLOAD_LIMIT_BYTES, VOICE_UPLOAD_LIMIT_BYTES, UploadTooLargeError, save_upload_bounded
 from .voice import ORIGINAL_REQUIRED_LABEL, ORIGINAL_SOURCE_LABEL, original_voice_available, resolve_voice
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -241,9 +250,10 @@ def book_estimate(book_id: str) -> dict:
 
 
 @app.patch("/api/books/{book_id}")
-def edit_book(book_id: str, payload: dict) -> dict:
+def edit_book(book_id: str, payload: BookEditRequest) -> dict:
     try:
-        return library.update_book(book_id, title=payload.get("title"), author=payload.get("author"), series=payload.get("series"))
+        data = payload.model_dump(exclude_unset=True)
+        return library.update_book(book_id, title=data.get("title"), author=data.get("author"), series=data.get("series"))
     except FileNotFoundError:
         raise HTTPException(404, "Book not found")
     except ValueError as exc:
@@ -283,10 +293,10 @@ async def import_book(file: UploadFile = File(...), title: str = Form(""), autho
     suffix = Path(file.filename or "book.txt").suffix.lower()
     if suffix not in {".pdf", ".txt", ".md"}:
         raise HTTPException(400, "Only PDF, TXT and Markdown are supported")
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as handle:
-        temp_path = Path(handle.name)
-        while chunk := await file.read(1024 * 1024):
-            handle.write(chunk)
+    try:
+        temp_path = await save_upload_bounded(file, suffix=suffix, limit_bytes=BOOK_UPLOAD_LIMIT_BYTES)
+    except UploadTooLargeError:
+        raise HTTPException(413, "Book upload is too large (maximum 100 MiB)")
     try:
         return library.import_book(temp_path, title=title or None, author=author, series=series)
     except Exception as exc:
@@ -303,10 +313,10 @@ async def save_voice_reference(audio: UploadFile = File(...), transcript: str = 
         raise HTTPException(400, "Unsupported reference audio format")
     if not transcript.strip():
         raise HTTPException(400, "Reference transcript is required")
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as handle:
-        temp_path = Path(handle.name)
-        while chunk := await audio.read(1024 * 1024):
-            handle.write(chunk)
+    try:
+        temp_path = await save_upload_bounded(audio, suffix=suffix, limit_bytes=VOICE_UPLOAD_LIMIT_BYTES)
+    except UploadTooLargeError:
+        raise HTTPException(413, "Voice reference is too large (maximum 50 MiB)")
     converted = temp_path.with_suffix(".normalized.wav")
     try:
         subprocess.run(
@@ -454,9 +464,9 @@ def audio(book_id: str):
 
 
 @app.post("/api/books/{book_id}/progress")
-def progress(book_id: str, payload: dict) -> dict:
+def progress(book_id: str, payload: ProgressRequest) -> dict:
     try:
-        return library.update_progress(book_id, payload.get("seconds", 0), payload.get("duration", 0))
+        return library.update_progress(book_id, payload.seconds, payload.duration)
     except FileNotFoundError:
         raise HTTPException(404, "Book not found")
 
@@ -467,14 +477,14 @@ def clear_all_progress() -> dict:
 
 
 @app.post("/api/preferences")
-def preferences(payload: dict) -> dict:
-    return library.save_preferences(payload)
+def preferences(payload: PreferencesRequest) -> dict:
+    return library.save_preferences(payload.model_dump(exclude_none=True, exclude_unset=True))
 
 
 @app.post("/api/playlists")
-def create_playlist(payload: dict) -> dict:
+def create_playlist(payload: PlaylistCreateRequest) -> dict:
     try:
-        return library.create_playlist(str(payload.get("name", "")))
+        return library.create_playlist(payload.name)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
@@ -488,9 +498,10 @@ def get_playlist(playlist_id: str) -> dict:
 
 
 @app.patch("/api/playlists/{playlist_id}")
-def update_playlist(playlist_id: str, payload: dict) -> dict:
+def update_playlist(playlist_id: str, payload: PlaylistUpdateRequest) -> dict:
     try:
-        return library.update_playlist(playlist_id, name=payload.get("name"), books=payload.get("books"))
+        data = payload.model_dump(exclude_unset=True)
+        return library.update_playlist(playlist_id, name=data.get("name"), books=data.get("books"))
     except FileNotFoundError:
         raise HTTPException(404, "Playlist or book not found")
     except ValueError as exc:
@@ -522,9 +533,9 @@ def playlist_remove(playlist_id: str, book_id: str) -> dict:
 
 
 @app.post("/api/follows")
-def follow(payload: dict) -> dict:
+def follow(payload: FollowRequest) -> dict:
     try:
-        return library.set_follow(str(payload.get("kind", "")), str(payload.get("value", "")), bool(payload.get("follow", True)))
+        return library.set_follow(payload.kind, payload.value, payload.follow)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
@@ -540,10 +551,10 @@ def clear_cache() -> dict:
 
 
 @app.post("/api/reset")
-def reset(payload: dict) -> dict:
+def reset(payload: ResetRequest) -> dict:
     _ensure_generation_idle("reset local data")
     try:
-        return library.reset_local_data(str(payload.get("confirmation", "")))
+        return library.reset_local_data(payload.confirmation)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 

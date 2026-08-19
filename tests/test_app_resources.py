@@ -9,6 +9,7 @@ import pytest
 import soundfile as sf
 from fastapi import HTTPException
 
+from tamil_audiobook.api_models import ResetRequest
 from tamil_audiobook.library import LocalLibrary
 
 
@@ -77,7 +78,7 @@ def test_destructive_operations_are_blocked_for_generating_book(tmp_path: Path):
         appmod.clear_book_audio(book["id"])
     assert clear_exc.value.status_code == 409
     with pytest.raises(HTTPException) as reset_exc:
-        appmod.reset({"confirmation": "DELETE ALL LOCAL DATA"})
+        appmod.reset(ResetRequest(confirmation="DELETE ALL LOCAL DATA"))
     assert reset_exc.value.status_code == 409
 
 
