@@ -130,6 +130,8 @@ test('premium mobile layout keeps navigation usable and avoids horizontal overfl
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.route('**/api/dashboard', route => json(route, dashboard));
+  await page.route('**/api/books/book-1/generation', route => json(route, { active: false }));
+  await page.route('**/api/books/book-1', route => json(route, book));
   await page.goto('/');
 
   await expect(page.locator('#premiumHero')).toBeVisible();
@@ -144,8 +146,9 @@ test('premium mobile layout keeps navigation usable and avoids horizontal overfl
   await page.getByRole('button', { name: 'Your Library' }).click();
   await expect(page.locator('#libraryToolbar')).toBeVisible();
   await expect(page.locator('#librarySearch')).toBeVisible();
+  await expect(page.locator('#libraryList [data-book="book-1"]')).toBeVisible();
 
-  await page.locator('[data-book="book-1"]').first().click();
+  await page.locator('#libraryList [data-book="book-1"]').click();
   await expect(page.locator('#readerView')).toHaveClass(/active-view/);
   await expect(page.locator('#readerTitle')).toBeVisible();
   await expect(page.locator('#generateButton')).toBeVisible();
