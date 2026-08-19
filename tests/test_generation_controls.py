@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from tamil_audiobook.controlled_engine import _ControlledModel
 from tamil_audiobook.generation_controls import (
     DEFAULT_CLASS_TEMPERATURE,
     DEFAULT_LAYER_PENALTY_FACTOR,
@@ -69,3 +70,55 @@ def test_checkpoint_signature_changes_for_every_quality_control():
         OmniVoiceGenerationControls(t_shift=0.2),
     ]
     assert all(item.cache_signature() != baseline for item in variants)
+
+
+class _FakeModel:
+    sample_rate = 24000
+
+    def __init__(self):
+        self.calls = []
+
+    def generate(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        return iter(())
+
+
+def test_auto_style_preserves_existing_prosody_and_forwards_native_controls():
+    fake = _FakeModel()
+    controlled = _ControlledModel(
+        fake,
+        OmniVoiceGenerationControls(
+            narration_style="auto",
+            class_temperature=0.25,
+            position_temperature=4.25,
+            layer_penalty_factor=4.75,
+            t_shift=0.2,
+        ),
+    )
+    list(controlled.generate(text="Hello?", instruct="Question instruction"))
+    kwargs = fake.calls[0][1]
+    assert kwargs["instruct"] == "Question instruction"
+    assert kwargs["class_temperature"] == 0.25
+    assert kwargs["position_temperature"] == 4.25
+    assert kwargs["layer_penalty_factor"] == 4.75
+    assert kwargs["t_shift"] == 0.2
+    assert "duration_s" not in kwargs
+
+
+def test_neutral_style_disables_semantic_instruction():
+    fake = _FakeModel()
+    controlled = _ControlledModel(fake, OmniVoiceGenerationControls(narration_style="neutral"))
+    list(controlled.generate(text="Hello?", instruct="Question instruction"))
+    assert fake.calls[0][1]["instruct"] == "None"
+
+
+def test_audiobook_style_only_fills_neutral_instruction():
+    fake = _FakeModel()
+    controlled = _ControlledModel(fake, OmniVoiceGenerationControls(narration_style="audiobook"))
+    list(controlled.generate(text="Plain narration.", instruct="None"))
+    assert "polished audiobook narration" in fake.calls[0][1]["instruct"]
+
+    fake2 = _FakeModel()
+    controlled2 = _ControlledModel(fake2, OmniVoiceGenerationControls(narration_style="audiobook"))
+    list(controlled2.generate(text="Question?", instruct="Question instruction"))
+    assert fake2.calls[0][1]["instruct"] == "Question instruction"
