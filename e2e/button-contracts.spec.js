@@ -101,9 +101,19 @@ test('settings destructive buttons respect confirmation and call the intended AP
 
 test('voice save validates required input and submits a local reference when complete', async ({ page }) => {
   let saved = null;
-  await bootstrap(page, { voice_ready: false, voice_source: null });
+  let voiceReady = false;
+  await page.route('**/api/dashboard', route => fulfillJson(route, dashboard({
+    voice_ready: voiceReady,
+    voice_source: voiceReady ? 'original-source-local' : null,
+  })));
+  await page.route('**/api/books/book-1', route => fulfillJson(route, audioBook));
+  await page.route('**/api/books/book-1/generation', route => fulfillJson(route, { active: false }));
+  await page.route('**/api/preferences', route => fulfillJson(route));
   await page.route('**/api/voice-reference', async route => {
-    if (route.request().method() === 'POST') saved = route.request().postDataBuffer();
+    if (route.request().method() === 'POST') {
+      saved = route.request().postDataBuffer();
+      voiceReady = true;
+    }
     return fulfillJson(route);
   });
   await page.goto('/');
@@ -120,7 +130,8 @@ test('voice save validates required input and submits a local reference when com
   });
   await page.locator('#saveVoice').click();
   await expect.poll(() => saved !== null).toBeTruthy();
-  await expect(page.locator('#voiceState')).toContainText('saved and normalized locally');
+  await expect(page.locator('#voiceState')).toContainText('Original source voice is configured locally');
+  await expect(page.locator('#homeVoiceStatus')).toHaveText('Voice ready');
 });
 
 test('reader mutation buttons call follow, progress, edit and playlist APIs', async ({ page }) => {
@@ -151,6 +162,7 @@ test('reader mutation buttons call follow, progress, edit and playlist APIs', as
   await page.locator('#followAuthor').click();
   await expect.poll(() => calls.some(c => c.url.endsWith('/api/follows') && c.method === 'POST')).toBeTruthy();
 
+  await page.locator('.book-management').evaluate(node => { node.open = true; });
   await page.locator('#resetBookProgress').click();
   await expect.poll(() => calls.some(c => c.url.endsWith('/api/books/book-1/progress') && c.method === 'DELETE')).toBeTruthy();
 
