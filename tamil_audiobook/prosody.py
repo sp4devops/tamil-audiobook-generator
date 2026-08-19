@@ -13,6 +13,7 @@ _HEADING_RE = re.compile(
 _DIALOGUE_RE = re.compile(r'^(?:["“‘]|[—–-]\s+)')
 _TAMIL_RE = re.compile(r"[\u0B80-\u0BFF]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
+_LATIN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
 
 # High-signal conversational markers only. These are deliberately conservative:
 # they should trigger a natural spoken delivery without turning formal prose into
@@ -22,11 +23,11 @@ _TAMIL_CONVERSATIONAL = (
     "இல்ல", "இருக்கு", "இருக்கா", "பண்ணு", "பண்ணுங்க", "பண்ணலாம்", "பண்ணலாமா",
     "செம", "ரொம்ப", "சரி விடு", "அப்பாடா", "பாத்தியா", "வாங்க", "போய்ட்டு",
 )
-_TANGLISH_CONVERSATIONAL = (
+_TANGLISH_CONVERSATIONAL = {
     "machi", "machan", "da", "dei", "enna", "ennada", "aama", "ama", "illa",
     "irukku", "iruka", "romba", "seri", "sari", "pannu", "pannunga", "pannalaam",
     "paathiya", "semma", "appadi", "apdi", "epdi", "eppadi", "venum", "venam",
-)
+}
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,7 @@ _PROFILES = {
     ),
     "exclamation": ProsodyProfile(
         "exclamation",
-        "Lively but controlled spoken delivery; use natural emphasis and do not shout; keep the same speaker identity.",
+        "Slightly emphatic audiobook delivery; lively but controlled, with natural emphasis and no shouting; keep the same speaker identity.",
     ),
     "heading": ProsodyProfile(
         "heading",
@@ -72,16 +73,21 @@ _PROFILES = {
 }
 
 
-def _contains_marker(text: str, markers: tuple[str, ...]) -> bool:
+def _contains_tamil_marker(text: str) -> bool:
     lowered = text.lower()
-    return any(marker in lowered for marker in markers)
+    return any(marker in lowered for marker in _TAMIL_CONVERSATIONAL)
+
+
+def _contains_tanglish_marker(text: str) -> bool:
+    words = {match.group(0).lower().strip("'-") for match in _LATIN_WORD_RE.finditer(text)}
+    return bool(words & _TANGLISH_CONVERSATIONAL)
 
 
 def _conversational_profile(text: str) -> ProsodyProfile | None:
     has_tamil = bool(_TAMIL_RE.search(text))
     has_latin = bool(_LATIN_RE.search(text))
-    tamil_marker = _contains_marker(text, _TAMIL_CONVERSATIONAL)
-    tanglish_marker = _contains_marker(text, _TANGLISH_CONVERSATIONAL)
+    tamil_marker = _contains_tamil_marker(text)
+    tanglish_marker = _contains_tanglish_marker(text)
 
     if has_tamil and has_latin and (tamil_marker or tanglish_marker):
         return _PROFILES["mixed-conversational"]
@@ -111,13 +117,15 @@ def prosody_for_chunk(text: str, boundary: str) -> ProsodyProfile:
     if _DIALOGUE_RE.match(stripped):
         return _PROFILES["dialogue"]
 
-    conversational = _conversational_profile(stripped)
-    if conversational is not None:
-        return conversational
-
+    # Explicit punctuation intent remains authoritative over a conversational
+    # style hint. A colloquial question still needs question intonation.
     normalized_boundary = str(boundary or "continuation")
     if normalized_boundary == "question":
         return _PROFILES["question"]
     if normalized_boundary == "exclamation":
         return _PROFILES["exclamation"]
+
+    conversational = _conversational_profile(stripped)
+    if conversational is not None:
+        return conversational
     return _NEUTRAL
