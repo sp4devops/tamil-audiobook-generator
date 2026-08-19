@@ -5,6 +5,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import soundfile as sf
+
 PACKAGE_ROOT = Path(__file__).resolve().parent
 DEFAULT_VOICE_ROOT = PACKAGE_ROOT / "default_voice"
 # This generated reference is retained only as an explicit emergency/test fallback.
@@ -16,6 +18,10 @@ GENERATED_FALLBACK_TEXT = "The transition should remain natural and consistent. 
 ORIGINAL_SOURCE_LABEL = "original-source-local"
 GENERATED_FALLBACK_LABEL = "accepted-c-generated-fallback"
 ORIGINAL_REQUIRED_LABEL = "original-source-required"
+REFERENCE_SAMPLE_RATE = 24000
+REFERENCE_CHANNELS = 1
+MIN_REFERENCE_SECONDS = 1.0
+MAX_REFERENCE_SECONDS = 120.0
 
 # Backward-compatible constant names for tooling/tests that inspect the packaged fallback.
 DEFAULT_VOICE_OPUS = GENERATED_FALLBACK_OPUS
@@ -24,12 +30,28 @@ DEFAULT_VOICE_PROVENANCE = GENERATED_FALLBACK_PROVENANCE
 DEFAULT_VOICE_TEXT = GENERATED_FALLBACK_TEXT
 
 
+def _valid_reference_audio(path: Path) -> bool:
+    """Validate the normalized source reference used by the synthesis model."""
+    try:
+        if not path.is_file() or path.stat().st_size < 1000:
+            return False
+        info = sf.info(path)
+        if info.samplerate != REFERENCE_SAMPLE_RATE or info.channels != REFERENCE_CHANNELS:
+            return False
+        if info.frames <= 0:
+            return False
+        duration = info.frames / float(info.samplerate)
+        return MIN_REFERENCE_SECONDS <= duration <= MAX_REFERENCE_SECONDS
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def original_voice_available(library) -> bool:
     audio, text = library.voice_reference_paths()
-    if not audio.is_file() or not text.is_file():
+    if not _valid_reference_audio(audio) or not text.is_file():
         return False
     try:
-        return audio.stat().st_size > 1000 and bool(text.read_text(encoding="utf-8").strip())
+        return bool(text.read_text(encoding="utf-8").strip())
     except OSError:
         return False
 
@@ -64,14 +86,16 @@ def materialize_default_voice(cache_root: Path) -> tuple[Path, str]:
     if cached_digest != GENERATED_FALLBACK_SHA256:
         shutil.copy2(GENERATED_FALLBACK_OPUS, opus_path)
         wav_path.unlink(missing_ok=True)
-    if not wav_path.is_file() or wav_path.stat().st_size < 1000:
+    if not _valid_reference_audio(wav_path):
         subprocess.run(
             [
                 "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                "-i", str(opus_path), "-ac", "1", "-ar", "24000", str(wav_path),
+                "-i", str(opus_path), "-ac", "1", "-ar", str(REFERENCE_SAMPLE_RATE), str(wav_path),
             ],
             check=True,
         )
+    if not _valid_reference_audio(wav_path):
+        raise RuntimeError("generated fallback could not be materialized as valid 24 kHz mono audio")
     return wav_path, GENERATED_FALLBACK_TEXT
 
 
@@ -92,5 +116,5 @@ def resolve_voice(library, *, allow_generated_fallback: bool = False) -> tuple[P
         return fallback_audio, fallback_text, GENERATED_FALLBACK_LABEL
 
     raise FileNotFoundError(
-        "Original source voice is not configured locally. Add the original recording and its exact transcript in Settings before generating."
+        "Original source voice is not configured locally. Add a valid 24 kHz mono source recording and its exact transcript in Settings before generating."
     )
