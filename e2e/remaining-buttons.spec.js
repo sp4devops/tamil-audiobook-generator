@@ -123,6 +123,8 @@ test('fullscreen, settings toggles, home voice action and reader back buttons re
   await expect(page.locator('body')).not.toHaveClass(/fullscreen-reading/);
   await page.locator('#playerFullscreen').click();
   await expect(page.locator('body')).toHaveClass(/fullscreen-reading/);
+  await page.locator('#playerFullscreen').click();
+  await expect(page.locator('body')).not.toHaveClass(/fullscreen-reading/);
 
   await page.locator('#backFromReader').click();
   await expect(page.locator('#libraryView')).toHaveClass(/active-view/);
