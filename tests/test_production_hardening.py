@@ -121,17 +121,26 @@ def test_tamil_grapheme_hard_split_preserves_combining_clusters():
 
 
 @pytest.mark.parametrize(
-    ("text", "expected"),
+    ("text", "boundary", "expected"),
     [
-        ("தமிழ் இலக்கியத்தின் வரலாற்றை விரிவாக ஆராய்கிறோம்.", "neutral"),
-        ("தரவுத்தளத்தில் குறியீட்டு அமைப்பு மற்றும் சேமிப்பு செயல்திறன் விளக்கப்படுகிறது.", "neutral"),
-        ("என்னடா மச்சி, இவ்வளவு நேரம் எங்கே போன?", "tamil-conversational"),
-        ("machi enna da, server ready ah?", "tanglish-conversational"),
-        ("மச்சி Kubernetes deploy பண்ணலாமா?", "mixed-question"),
+        ("தமிழ் இலக்கியத்தின் வரலாற்றை விரிவாக ஆராய்கிறோம்.", "continuation", "neutral"),
+        (
+            "தரவுத்தளத்தில் குறியீட்டு அமைப்பு மற்றும் சேமிப்பு செயல்திறன் விளக்கப்படுகிறது.",
+            "continuation",
+            "neutral",
+        ),
+        ("என்னடா மச்சி, இவ்வளவு நேரம் எங்கே போன.", "continuation", "tamil-conversational"),
+        ("machi enna da, server ready ah.", "continuation", "tanglish-conversational"),
+        ("என்னடா மச்சி, இவ்வளவு நேரம் எங்கே போன?", "question", "question"),
+        ("machi enna da, server ready ah?", "question", "mixed-question"),
+        ("மச்சி Kubernetes deploy பண்ணலாமா?", "question", "mixed-question"),
     ],
 )
-def test_conversational_detection_is_lexical_not_substring(text: str, expected: str):
-    boundary = "question" if text.endswith("?") else "continuation"
+def test_conversational_detection_is_lexical_not_substring(
+    text: str,
+    boundary: str,
+    expected: str,
+):
     assert prosody_for_chunk(text, boundary).name == expected
 
 
