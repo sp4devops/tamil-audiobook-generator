@@ -33,6 +33,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   acceptance:
@@ -81,7 +82,8 @@ jobs:
           required = {
               '/', '/api/dashboard', '/api/books/import', '/api/voice-reference',
               '/api/books/{book_id}/estimate', '/api/books/{book_id}/generation',
-              '/api/books/{book_id}/chunks/{chunk_index}', '/api/jobs/{job_id}'
+              '/api/books/{book_id}/chunks/{chunk_index}', '/api/jobs/{job_id}',
+              '/api/jobs/{job_id}/cancel'
           }
           missing = required - routes
           if missing:
@@ -91,30 +93,26 @@ jobs:
           print('provisioning_script_syntax=PASS')
           PY
 
-      - name: Materialize final 11-minute accepted-C default voice
+      - name: Download accepted source voice transiently
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/accepted-c-default" outputs/audiobook_engine/checkpoints
-          python - <<'PY'
-          import os
-          from pathlib import Path
-          from tamil_audiobook.voice import DEFAULT_VOICE_PROVENANCE, materialize_default_voice
-          root = Path(os.environ['RUNNER_TEMP']) / 'accepted-c-default'
-          audio, transcript = materialize_default_voice(root)
-          text_path = root / 'reference.txt'
-          text_path.write_text(transcript, encoding='utf-8')
-          expected = 'extracted from the Final 11-minute accepted-C audiobook MP3'
-          if expected not in DEFAULT_VOICE_PROVENANCE:
-              raise SystemExit('Unexpected default voice provenance: ' + DEFAULT_VOICE_PROVENANCE)
-          with Path(os.environ['GITHUB_ENV']).open('a', encoding='utf-8') as handle:
-              handle.write(f'DEFAULT_VOICE_WAV={audio}\n')
-              handle.write(f'DEFAULT_VOICE_TEXT={text_path}\n')
-          print('default_voice_provenance=' + DEFAULT_VOICE_PROVENANCE)
-          print('default_voice_materialized=PASS')
-          PY
+          mkdir -p "$RUNNER_TEMP/accepted-c-source" outputs/audiobook_engine/checkpoints
+          gh run download 31974866774 \
+            --repo sp4devops/tamil-voice-clone \
+            --name voice-001-stage1-apple-silicon-listening-samples \
+            --dir "$RUNNER_TEMP/accepted-c-source"
+          test -s "$RUNNER_TEMP/accepted-c-source/mixed_listening_sample.wav"
+          cat > "$RUNNER_TEMP/accepted-c-source/reference.txt" <<'EOF'
+          வணக்கம், this is my voice. இன்று Kubernetes சரியாக வேலை செய்கிறது.
+          EOF
+          printf 'DEFAULT_VOICE_WAV=%s\n' "$RUNNER_TEMP/accepted-c-source/mixed_listening_sample.wav" >> "$GITHUB_ENV"
+          printf 'DEFAULT_VOICE_TEXT=%s\n' "$RUNNER_TEMP/accepted-c-source/reference.txt" >> "$GITHUB_ENV"
+          echo 'accepted_source_voice=transient-only'
 
-      - name: Run real resumable audiobook engine with accepted C default
+      - name: Run real resumable audiobook engine
         shell: bash
         run: |
           set -euo pipefail
@@ -166,7 +164,6 @@ jobs:
           import json
           import re
           from pathlib import Path
-          from tamil_audiobook.voice import DEFAULT_VOICE_PROVENANCE
           out = Path('outputs/audiobook_engine')
           report = json.loads((out / 'engine_report.json').read_text(encoding='utf-8'))
           usage = (out / 'resource_usage.txt').read_text(encoding='utf-8', errors='replace')
@@ -176,10 +173,6 @@ jobs:
           rss = int(match.group(1)); rss_gib = rss / (1024 ** 3)
           report['maximum_resident_set_bytes'] = rss
           report['maximum_resident_set_gib'] = round(rss_gib, 3)
-
-          # Balanced/cool modes intentionally sleep between chunks to protect sustained
-          # Apple-Silicon thermals. Keep wall-clock RTF visible, but do not count those
-          # deliberate idle sleeps as model throughput regression.
           wall_rtf = float(report['aggregate_rtf'])
           generation_seconds = float(report['generation_seconds'])
           thermal_idle_seconds = float(report.get('thermal_idle_seconds', 0.0))
@@ -193,7 +186,7 @@ jobs:
           report['memory_gate_pass'] = rss_gib <= 3.0
           report['mp3_export_pass'] = (out / 'sample_audiobook.mp3').stat().st_size > 1000
           report['accepted_voice_config'] = report['num_steps'] == 20 and abs(report['guidance_scale'] - 2.5) < 1e-9
-          report['default_voice_provenance'] = DEFAULT_VOICE_PROVENANCE
+          report['accepted_voice_source'] = 'transient-stage1-artifact'
           report['acceptance_status'] = 'PASS' if all((report['speed_gate_pass'], report['memory_gate_pass'], report['mp3_export_pass'], report['accepted_voice_config'])) else 'FAIL'
           (out / 'engine_report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
           print('engine_audio_seconds=' + str(report['audio_seconds']))
@@ -207,21 +200,20 @@ jobs:
               raise SystemExit('Stage 2 audiobook engine failed acceptance gates')
           PY
 
-      - name: Remove transient material
+      - name: Remove transient private audio
         if: always()
         shell: bash
         run: |
-          rm -rf "$RUNNER_TEMP/accepted-c-default" outputs/audiobook_engine/checkpoints
-          rm -f outputs/audiobook_engine/resource_usage.txt outputs/audiobook_engine/resumed.wav outputs/audiobook_engine/resume_report.json
+          rm -rf "$RUNNER_TEMP/accepted-c-source" outputs/audiobook_engine/checkpoints
+          rm -f outputs/audiobook_engine/resource_usage.txt \
+                outputs/audiobook_engine/resumed.wav outputs/audiobook_engine/resume_report.json \
+                outputs/audiobook_engine/sample_audiobook.wav outputs/audiobook_engine/sample_audiobook.mp3
 
-      - name: Upload safe audiobook engine artifact
+      - name: Upload privacy-safe acceptance report
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: stage2-audiobook-engine-acceptance
-          path: |
-            outputs/audiobook_engine/engine_report.json
-            outputs/audiobook_engine/sample_audiobook.wav
-            outputs/audiobook_engine/sample_audiobook.mp3
-          if-no-files-found: warn
+          name: stage2-audiobook-engine-acceptance-report
+          path: outputs/audiobook_engine/engine_report.json
+          if-no-files-found: error
           retention-days: 7
