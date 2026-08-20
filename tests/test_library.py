@@ -1,6 +1,9 @@
 import json
 from pathlib import Path
 
+import numpy as np
+import soundfile as sf
+
 from tamil_audiobook.library import LocalLibrary, extract_book_text
 from tamil_audiobook.textnorm import normalize_book_text
 
@@ -48,14 +51,9 @@ def test_existing_import_migration_reextracts_original_and_invalidates_stale_aud
     text_path = book_dir / "text.txt"
     meta_path = book_dir / "metadata.json"
     source_path = book_dir / "source.txt"
-
-    # Simulate text.txt that was corrupted by an older destructive normalizer.
-    # The retained original source remains correct and must be authoritative for
-    # a normalization-version migration.
     canonical_source = "கேளுங்கள். நேரம் மிகவும் முக்கியம். மேலும் தொடருங்கள்."
     source_path.write_text(canonical_source, encoding="utf-8")
     text_path.write_text("ேநயர்கேள", encoding="utf-8")
-
     lib.update_progress(book["id"], 9, 20)
     (book_dir / "audiobook.mp3").write_bytes(b"audio" * 300)
     (book_dir / "report.json").write_text("{}", encoding="utf-8")
@@ -66,7 +64,6 @@ def test_existing_import_migration_reextracts_original_and_invalidates_stale_aud
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     meta["text_normalization_version"] = 2
     meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-
     dash = lib.dashboard()
     migrated = next(item for item in dash["books"] if item["id"] == book["id"])
     assert text_path.read_text(encoding="utf-8") == canonical_source
@@ -141,12 +138,10 @@ def test_theme_preferences_and_reset_guard(tmp_path: Path):
     assert prefs["shuffle"] is True
     assert prefs["skip_seconds"] == 30
     assert "ignored" not in prefs
-
     unchanged = lib.save_preferences({"generation_mode": "banana", "playback_rate": 99, "skip_seconds": -1})
     assert unchanged["generation_mode"] == "cool"
     assert unchanged["playback_rate"] == 1.0
     assert unchanged["skip_seconds"] == 30
-
     try:
         lib.reset_local_data("wrong")
     except ValueError:
@@ -166,7 +161,10 @@ def test_cache_activity_progress_and_voice_deletion(tmp_path: Path):
     lib.update_progress(book["id"], 2, 10)
     (lib.cache_root / "temp.bin").write_bytes(b"x" * 100)
     audio = tmp_path / "voice.wav"
-    audio.write_bytes(b"fake")
+    rate = 24000
+    timeline = np.arange(rate * 2, dtype=np.float32) / rate
+    signal = 0.1 * np.sin(2.0 * np.pi * 220.0 * timeline)
+    sf.write(audio, signal.astype(np.float32), rate)
     lib.save_voice_reference(audio, "test transcript")
     voice_audio, voice_text = lib.voice_reference_paths()
     assert lib.voice_ready()
@@ -188,7 +186,6 @@ def test_build_cues_tracks_crossfade(tmp_path: Path):
     lib = LocalLibrary(tmp_path / "library")
     book = lib.import_book(source)
     from tamil_audiobook.engine import chunk_text
-
     chunks = chunk_text(lib.text(book["id"]))
     report = {"crossfade_ms": 55, "chunk_reports": [{"audio_seconds": 4.0} for _ in chunks]}
     cues = lib.build_cues(book["id"], report)

@@ -1,8 +1,47 @@
+[build-system]
+requires = ["setuptools>=80", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "tamil-audiobook-generator"
 version = "0.1.0"
-description = "Local Tamil/English audiobook generation and listening app"
+description = "Local Tamil/English/Tanglish audiobook generation and listening app"
+readme = "README.md"
 requires-python = ">=3.11,<3.12"
+dependencies = [
+  "numpy==2.4.6",
+  "soundfile==0.14.0",
+  "fastapi==0.141.1",
+  "uvicorn==0.51.0",
+  "python-multipart==0.0.32",
+  "pypdf==6.15.0",
+]
+
+[project.optional-dependencies]
+apple-silicon = [
+  "mlx-audio==0.4.6; platform_system == 'Darwin' and platform_machine == 'arm64'",
+  "mlx==0.32.0; platform_system == 'Darwin' and platform_machine == 'arm64'",
+  "mlx-lm==0.31.3; platform_system == 'Darwin' and platform_machine == 'arm64'",
+  "transformers==5.12.1; platform_system == 'Darwin' and platform_machine == 'arm64'",
+]
+test = [
+  "pytest==9.1.1",
+  "ruff==0.12.10",
+  "pip-audit>=2.9,<3",
+]
+
+[project.scripts]
+listenleaf = "tamil_audiobook.cli:main"
+audiobook = "tamil_audiobook.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["tamil_audiobook*"]
+
+[tool.setuptools.package-data]
+tamil_audiobook = ["static/*", "static/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -14,6 +53,9 @@ line-length = 120
 exclude = ["outputs", ".venv"]
 
 [tool.ruff.lint]
-# Start CI with high-signal correctness rules; broader style cleanup can happen
-# separately without blocking functional fixes.
-select = ["E9", "F63", "F7", "F82"]
+# Expand beyond fatal syntax/name checks into bugbear correctness checks, while
+# deliberately avoiding repository-wide formatting/import-order churn in this
+# production-hardening PR. B904 is intentionally noisy at FastAPI translation
+# boundaries; B007/B905 are stylistic in existing compatibility code.
+select = ["E9", "F63", "F7", "F82", "B"]
+ignore = ["B007", "B008", "B904", "B905"]

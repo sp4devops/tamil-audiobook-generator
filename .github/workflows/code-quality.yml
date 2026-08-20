@@ -3,6 +3,8 @@ name: code-quality
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -37,11 +39,12 @@ jobs:
           node --check tamil_audiobook/static/product-ui.js
           node --check playwright.config.js
           node --check e2e/ui.spec.js
+          node --check e2e/hardening.spec.js
           python -m compileall -q tamil_audiobook scripts tests e2e
 
   tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -58,14 +61,20 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check \
+            'setuptools>=83.0.0' \
             numpy==2.4.6 \
             soundfile==0.14.0 \
             pytest==9.1.1 \
             fastapi==0.141.1 \
+            uvicorn==0.51.0 \
             python-multipart==0.0.32 \
             pypdf==6.15.0 \
             ruff==0.12.10 \
+            'pip-audit>=2.9,<3' \
             imageio-ffmpeg==0.6.0
+          python -m pip install --no-deps .
+          listenleaf --help | grep -q 'Local Tamil/English audiobook library'
+          audiobook --help | grep -q 'Local Tamil/English audiobook library'
           mkdir -p "$HOME/.local/bin"
           python - <<'PY'
           import os
@@ -94,6 +103,12 @@ jobs:
           ffmpeg -version | head -n 1
           python -m pytest tests
 
+      - name: Audit installed dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          pip-audit --local --skip-editable
+
   browser-e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -110,7 +125,7 @@ jobs:
           npm install --no-save --no-audit --no-fund @playwright/test@1.62.1
           npx playwright install chromium
 
-      - name: Run Chromium smoke test
+      - name: Run Chromium suite
         shell: bash
         run: |
           set -euo pipefail

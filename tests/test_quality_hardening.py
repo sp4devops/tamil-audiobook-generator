@@ -4,7 +4,7 @@ import inspect
 import json
 from pathlib import Path
 
-from tamil_audiobook import engine
+from tamil_audiobook import controlled_engine, engine
 
 
 def test_model_is_immutably_pinned_and_cache_records_revision(tmp_path: Path):
@@ -19,7 +19,15 @@ def test_model_is_immutably_pinned_and_cache_records_revision(tmp_path: Path):
     assert manifest["model_revision"] == engine.MODEL_REVISION
 
     source = inspect.getsource(engine.synthesize_audiobook)
-    assert "load_model(MODEL_ID, revision=MODEL_REVISION)" in source
+    assert "model_loader(MODEL_ID, revision=MODEL_REVISION)" in source
+
+
+def test_controlled_engine_uses_explicit_injection_not_global_monkey_patch():
+    source = inspect.getsource(controlled_engine.synthesize_audiobook_with_controls)
+    assert "model_loader=controlled_load_model" in source
+    assert "checkpoint_salt=" in source
+    assert "tts_utils.load_model =" not in source
+    assert "base_engine._checkpoint_key =" not in source
 
 
 def test_report_semantics_do_not_claim_listening_quality_pass():
@@ -29,7 +37,7 @@ def test_report_semantics_do_not_claim_listening_quality_pass():
     assert '"status": "PASS"' not in source
 
 
-def test_progressive_frontend_avoids_global_monkey_patches_and_duplicate_chunker():
+def test_progressive_frontend_has_one_absolute_playback_position_contract():
     static_root = Path(__file__).parents[1] / "tamil_audiobook" / "static"
     progressive = (static_root / "progressive.js").read_text(encoding="utf-8")
     index = (static_root / "index.html").read_text(encoding="utf-8")
@@ -39,8 +47,13 @@ def test_progressive_frontend_avoids_global_monkey_patches_and_duplicate_chunker
     assert "estimateChunkSeconds" not in progressive
     assert "openBook =" not in progressive
     assert "loadBook =" not in progressive
-    assert "audio.ontimeupdate =" not in progressive
+    assert "canonicalPlaybackPosition" in progressive
+    assert "state.playbackPosition = canonicalPlaybackPosition" in progressive
+    assert "chunkOffset(partial.index) + Number(audio.currentTime" in progressive
+    assert "duration: bookDuration()" in progressive
+    assert "persistCanonicalProgress" in progressive
+    assert "seconds: position.seconds" in progressive
+    assert "duration: position.duration" in progressive
     assert "audio.onended =" not in progressive
     assert "MutationObserver" in progressive
-    assert "audio.addEventListener('timeupdate'" in progressive
     assert index.index('/static/app.js') < index.index('/static/progressive.js')

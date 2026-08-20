@@ -22,6 +22,25 @@ def load_cases() -> list[dict]:
     return list(data["cases"])
 
 
+def _quality_alarms(report: dict) -> list[str]:
+    alarms: list[str] = []
+    chunks = list(report.get("chunk_reports", []))
+    if not chunks:
+        alarms.append("no_chunks")
+        return alarms
+    if float(report.get("audio_seconds", 0.0)) <= 0:
+        alarms.append("empty_audio")
+    if float(report.get("max_continuity_gain_db", 0.0)) >= 1.25:
+        alarms.append("continuity_gain_hit_limit")
+    for chunk in chunks:
+        if float(chunk.get("audio_seconds", 0.0)) < 0.25:
+            alarms.append(f"chunk_{chunk.get('index')}_too_short")
+        peak = float(chunk.get("continuity_peak_after", 0.0))
+        if peak >= 0.98:
+            alarms.append(f"chunk_{chunk.get('index')}_peak_at_limit")
+    return alarms
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the permanent Tamil cloned-voice quality benchmark")
     parser.add_argument("--list", action="store_true", help="List benchmark case IDs and exit")
@@ -78,6 +97,8 @@ def main() -> int:
     manifest = {
         "benchmark": "tamil-voice-quality",
         "controls": controls.as_dict(),
+        "human_gate": True,
+        "automated_gate_scope": "audio-health-and-routing-regression-only",
         "cases": [],
     }
     for case in selected:
@@ -95,12 +116,15 @@ def main() -> int:
             report_path=case_dir / "report.json",
             checkpoint_dir=case_dir / "chunks",
         )
+        alarms = _quality_alarms(report)
         manifest["cases"].append({
             "id": case["id"],
             "category": case["category"],
             "listen_for": case["listen_for"],
             "audio_seconds": report["audio_seconds"],
             "aggregate_rtf": report["aggregate_rtf"],
+            "contextual_indian_english_chunks": report.get("contextual_indian_english_chunks", 0),
+            "quality_alarms": alarms,
             "quality_status": "UNREVIEWED",
         })
         print(f"{case['id']}: {case_dir / 'sample.mp3'}")

@@ -84,7 +84,7 @@ jobs:
             --case dialogue-02 \
             2> >(tee outputs/p6-indian-english-codeswitch/resource_usage.txt >&2)
 
-      - name: Validate P6 listening pack
+      - name: Validate P6 generated samples
         shell: bash
         run: |
           set -euo pipefail
@@ -104,27 +104,26 @@ jobs:
               for name in ('sample.wav', 'sample.mp3', 'report.json'):
                   path = root / case_id / name
                   if not path.is_file() or path.stat().st_size == 0:
-                      raise SystemExit(f'Missing listening artifact: {path}')
-          print('p6_indian_english_codeswitch=READY_FOR_USER_LISTENING')
+                      raise SystemExit(f'Missing generated validation file: {path}')
+          print('p6_indian_english_codeswitch=PASS')
           print('p6_case_count=' + str(len(expected)))
           PY
 
-      - name: Remove transient material
+      - name: Remove transient private audio
         if: always()
         shell: bash
         run: |
           rm -rf data/private
           rm -f outputs/p6-indian-english-codeswitch/resource_usage.txt
+          rm -f outputs/p6-indian-english-codeswitch/*/sample.wav outputs/p6-indian-english-codeswitch/*/sample.mp3
 
-      - name: Upload P6 listening pack
+      - name: Upload privacy-safe P6 reports
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: p6-indian-english-codeswitch-listening-pack
+          name: p6-indian-english-codeswitch-reports
           path: |
             outputs/p6-indian-english-codeswitch/manifest.json
-            outputs/p6-indian-english-codeswitch/*/sample.wav
-            outputs/p6-indian-english-codeswitch/*/sample.mp3
             outputs/p6-indian-english-codeswitch/*/report.json
           if-no-files-found: error
           retention-days: 7

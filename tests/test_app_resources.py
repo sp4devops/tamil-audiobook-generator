@@ -36,7 +36,11 @@ def _make_book(tmp_path: Path):
 
 def _configure_fake_original_voice(tmp_path: Path) -> None:
     audio, transcript = appmod.library.voice_reference_paths()
-    sf.write(audio, np.zeros(48000, dtype=np.float32), 24000)
+    rate = 24000
+    seconds = 2.0
+    timeline = np.arange(int(rate * seconds), dtype=np.float32) / rate
+    signal = 0.1 * np.sin(2.0 * np.pi * 220.0 * timeline)
+    sf.write(audio, signal.astype(np.float32), rate)
     transcript.write_text("local reference transcript", encoding="utf-8")
 
 
@@ -59,7 +63,8 @@ def test_different_book_generation_is_rejected_when_metal_slot_busy(tmp_path: Pa
     with pytest.raises(HTTPException) as exc:
         appmod.generate_book(book["id"])
     assert exc.value.status_code == 409
-    assert "one Metal synthesis job" in str(exc.value.detail)
+    assert "Another audiobook generation is already running" in str(exc.value.detail)
+    assert "Other Book" in str(exc.value.detail)
 
 
 def test_destructive_operations_are_blocked_for_generating_book(tmp_path: Path):
