@@ -61,6 +61,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check \
+            'setuptools>=83.0.0' \
             numpy==2.4.6 \
             soundfile==0.14.0 \
             pytest==9.1.1 \
