@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-PROSODY_VERSION = 4
+PROSODY_VERSION = 5
 
 _LIST_RE = re.compile(r"^(?:[-*•]\s+|\d{1,3}[.)]\s+)")
 _HEADING_RE = re.compile(
@@ -36,16 +36,23 @@ class ProsodyProfile:
 
 _NEUTRAL = ProsodyProfile("neutral", "None")
 
+_PACE_CONTINUITY = (
+    "Match the surrounding Tamil speaking rate. "
+    "Do not speed up, clip, or compress embedded English words or Tamil-script English loanwords; "
+    "give them the same relaxed syllabic timing as the surrounding Tamil."
+)
 _INDIAN_CODE_SWITCH = (
     "Keep one South-Indian Tamil bilingual speaker throughout. "
     "Pronounce embedded English words in natural South-Indian English, with everyday Indian-English stress and rhythm. "
     "Do not switch into an American or British accent at English words, and do not over-Tamilize technical English. "
-    "Keep English words clear while preserving the surrounding Tamil phrase rhythm and the same speaker identity."
+    "Keep English words clear while preserving the surrounding Tamil phrase rhythm and the same speaker identity. "
+    + _PACE_CONTINUITY
 )
 _INDIAN_ENGLISH_CONTINUATION = (
     "Continue as the same South-Indian Tamil bilingual speaker from the surrounding passage. "
     "Speak this English in natural everyday South-Indian English with Indian-English stress and rhythm. "
-    "Do not reset into an American or British accent, do not imitate a separate English narrator, and keep the same timbre, pace, and conversational energy."
+    "Do not reset into an American or British accent, do not imitate a separate English narrator, and keep the same timbre and conversational energy. "
+    + _PACE_CONTINUITY
 )
 
 _PROFILES = {
@@ -71,7 +78,8 @@ _PROFILES = {
     ),
     "tamil-conversational": ProsodyProfile(
         "tamil-conversational",
-        "Natural everyday spoken Tamil; warm, lively and locally conversational, with smooth phrase flow and colloquial rhythm; avoid formal newsreader cadence and avoid exaggerated acting; keep the same speaker identity.",
+        "Natural everyday spoken Tamil; warm, lively and locally conversational, with smooth phrase flow and colloquial rhythm; avoid formal newsreader cadence and avoid exaggerated acting; keep the same speaker identity. "
+        + _PACE_CONTINUITY,
     ),
     "tanglish-conversational": ProsodyProfile(
         "tanglish-conversational",
