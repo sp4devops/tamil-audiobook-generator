@@ -130,7 +130,6 @@ jobs:
           root = Path('outputs/p7-context-native-delivery')
           benchmark = json.loads(Path('benchmarks/tamil_voice_quality.json').read_text(encoding='utf-8'))
           cases = {case['id']: case for case in benchmark['cases']}
-
           required_tamil = ('formal-ta-01', 'formal-ta-02', 'colloquial-ta-01', 'colloquial-ta-02')
           tamil_re = re.compile(r'[\u0B80-\u0BFF]')
           for case_id in required_tamil:
@@ -143,7 +142,6 @@ jobs:
               report = json.loads(report_path.read_text(encoding='utf-8'))
               if report.get('audio_seconds', 0) <= 0:
                   raise SystemExit(f'P7 failed: empty Tamil audio for {case_id}')
-
           dialogue = json.loads((root / 'dialogue-02' / 'report.json').read_text(encoding='utf-8'))
           english1 = json.loads((root / 'english-01' / 'report.json').read_text(encoding='utf-8'))
           english2 = json.loads((root / 'english-02' / 'report.json').read_text(encoding='utf-8'))
@@ -157,23 +155,22 @@ jobs:
                   raise SystemExit(f'P7 failed: stale prosody in {report_path}')
               if report.get('audio_seconds', 0) <= 0:
                   raise SystemExit(f'P7 failed: empty audio in {report_path}')
-          print('p7_tamil_and_context_native_delivery=READY_FOR_USER_LISTENING')
+          print('p7_tamil_and_context_native_delivery=PASS')
           PY
-      - name: Remove transient material
+      - name: Remove transient private audio
         if: always()
         shell: bash
         run: |
           rm -rf data/private
           rm -f outputs/p7-context-native-delivery/resource_usage.txt
-      - name: Upload P7 listening pack
+          rm -f outputs/p7-context-native-delivery/*/sample.wav outputs/p7-context-native-delivery/*/sample.mp3
+      - name: Upload privacy-safe P7 reports
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: p7-context-native-delivery-listening-pack
+          name: p7-context-native-delivery-reports
           path: |
             outputs/p7-context-native-delivery/manifest.json
-            outputs/p7-context-native-delivery/*/sample.wav
-            outputs/p7-context-native-delivery/*/sample.mp3
             outputs/p7-context-native-delivery/*/report.json
           if-no-files-found: error
           retention-days: 7
