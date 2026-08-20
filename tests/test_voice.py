@@ -11,6 +11,7 @@ from tamil_audiobook.voice import (
     ORIGINAL_SOURCE_LABEL,
     _decode_default_opus,
     _valid_reference_audio,
+    audit_reference_audio,
     default_voice_available,
     materialize_default_voice,
     original_voice_available,
@@ -35,7 +36,7 @@ def test_packaged_generated_fallback_integrity_and_audio(tmp_path: Path):
     assert "தொடர்ந்து" in transcript
 
 
-def test_source_voice_requires_24khz_mono_audio(tmp_path: Path):
+def test_source_voice_requires_24khz_mono_audio_and_real_signal(tmp_path: Path):
     lib = LocalLibrary(tmp_path / "library")
     audio, transcript = lib.voice_reference_paths()
     transcript.write_text("exact source transcript", encoding="utf-8")
@@ -48,8 +49,17 @@ def test_source_voice_requires_24khz_mono_audio(tmp_path: Path):
     assert not _valid_reference_audio(audio)
     assert not original_voice_available(lib)
 
+    # Structural validity alone is no longer enough: silence must not be accepted
+    # as a voice-cloning reference.
     sf.write(audio, np.zeros(48000, dtype=np.float32), 24000)
     assert _valid_reference_audio(audio)
+    assert not audit_reference_audio(audio).accepted
+    assert not original_voice_available(lib)
+
+    t = np.arange(48000, dtype=np.float32) / 24000
+    voiced = (0.12 * np.sin(2 * np.pi * 180 * t)).astype(np.float32)
+    sf.write(audio, voiced, 24000)
+    assert audit_reference_audio(audio).accepted
     assert original_voice_available(lib)
 
 
@@ -73,7 +83,6 @@ def test_resolve_voice_requires_original_and_never_silently_falls_back(tmp_path:
     assert fallback_audio.is_file()
     assert fallback_text.strip()
 
-    # A locally stored source recording always wins over the generated fallback.
     lib.save_voice_reference(fallback_audio, "original source reference words")
     audio, transcript, source = resolve_voice(lib)
     assert source == ORIGINAL_SOURCE_LABEL
