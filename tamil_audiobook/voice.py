@@ -1,34 +1,22 @@
 from __future__ import annotations
 
-import hashlib
-import shutil
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 
-PACKAGE_ROOT = Path(__file__).resolve().parent
-DEFAULT_VOICE_ROOT = PACKAGE_ROOT / "default_voice"
-GENERATED_FALLBACK_OPUS = DEFAULT_VOICE_ROOT / "final_11min_accepted_c.opus"
-GENERATED_FALLBACK_SHA256 = "51afd8c66adfac4906f36080e327331bfc2b16638a95f605452f1f1c2b162802"
-GENERATED_FALLBACK_PROVENANCE = "8.52-second bilingual excerpt extracted from the Final 11-minute accepted-C audiobook MP3"
-GENERATED_FALLBACK_TEXT = "The transition should remain natural and consistent. கதை தொடர்ந்து செல்லும் போது ஒவ்வொரு வாக்கியத்திலும் உச்சரிப்பு தெளிவாக இருக்க வேண்டும்."
-
 ORIGINAL_SOURCE_LABEL = "original-source-local"
-GENERATED_FALLBACK_LABEL = "accepted-c-generated-fallback"
 ORIGINAL_REQUIRED_LABEL = "original-source-required"
 REFERENCE_SAMPLE_RATE = 24000
 REFERENCE_CHANNELS = 1
 MIN_REFERENCE_SECONDS = 1.0
 MAX_REFERENCE_SECONDS = 120.0
 PREFERRED_REFERENCE_SECONDS = (6.0, 30.0)
-
-DEFAULT_VOICE_OPUS = GENERATED_FALLBACK_OPUS
-DEFAULT_VOICE_SHA256 = GENERATED_FALLBACK_SHA256
-DEFAULT_VOICE_PROVENANCE = GENERATED_FALLBACK_PROVENANCE
-DEFAULT_VOICE_TEXT = GENERATED_FALLBACK_TEXT
+SUPPORTED_REFERENCE_SUFFIXES = {".wav", ".mp3", ".m4a", ".opus", ".flac"}
 
 
 @dataclass(frozen=True)
@@ -53,8 +41,8 @@ class ReferenceQualityReport:
         }
 
 
-def _valid_reference_audio(path: Path) -> bool:
-    """Validate the normalized source reference container and duration."""
+def valid_reference_audio(path: Path) -> bool:
+    """Validate the canonical normalized reference container and duration."""
     try:
         if not path.is_file() or path.stat().st_size < 1000:
             return False
@@ -69,15 +57,13 @@ def _valid_reference_audio(path: Path) -> bool:
         return False
 
 
-def audit_reference_audio(path: Path) -> ReferenceQualityReport:
-    """Run a lightweight local quality gate for clone-reference audio.
+# Backward-compatible private alias for older callers/tests.
+_valid_reference_audio = valid_reference_audio
 
-    This intentionally avoids ASR/cloud dependencies. It catches references that
-    are structurally valid but useless for cloning: silence, almost-no-speech,
-    severe clipping, and extreme level/duration. Soft issues remain warnings so a
-    user can still choose an unusual but valid recording.
-    """
-    if not _valid_reference_audio(path):
+
+def audit_reference_audio(path: Path) -> ReferenceQualityReport:
+    """Run the local structural and signal-quality gate for clone references."""
+    if not valid_reference_audio(path):
         return ReferenceQualityReport(
             False,
             0.0,
@@ -135,6 +121,57 @@ def audit_reference_audio(path: Path) -> ReferenceQualityReport:
     )
 
 
+def normalize_reference_audio(source: Path, destination: Path) -> ReferenceQualityReport:
+    """Normalize a common local audio format to the one canonical clone format.
+
+    The destination is replaced atomically only after ffmpeg output passes both
+    structural and signal-quality validation. A bad source can therefore never
+    become the configured reference merely because it has a .wav extension.
+    """
+    source = Path(source)
+    destination = Path(destination)
+    if source.suffix.lower() not in SUPPORTED_REFERENCE_SUFFIXES:
+        raise ValueError("Unsupported reference audio format")
+    if not source.is_file() or source.stat().st_size == 0:
+        raise ValueError("Reference audio is missing or empty")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=destination.stem + ".", suffix=".wav", dir=destination.parent)
+    os.close(fd)
+    temp = Path(temp_name)
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                str(source),
+                "-vn",
+                "-ac",
+                str(REFERENCE_CHANNELS),
+                "-ar",
+                str(REFERENCE_SAMPLE_RATE),
+                "-c:a",
+                "pcm_s16le",
+                str(temp),
+            ],
+            check=True,
+        )
+        report = audit_reference_audio(temp)
+        if not report.accepted:
+            details = ", ".join(report.warnings) or "reference failed validation"
+            raise ValueError(f"Reference audio rejected: {details}")
+        os.replace(temp, destination)
+        destination.chmod(0o600)
+        return report
+    except subprocess.CalledProcessError as exc:
+        raise ValueError("Reference audio could not be decoded and normalized locally") from exc
+    finally:
+        temp.unlink(missing_ok=True)
+
+
 def reference_text_warnings(transcript: str) -> tuple[str, ...]:
     text = str(transcript or "").strip()
     warnings: list[str] = []
@@ -149,7 +186,7 @@ def reference_text_warnings(transcript: str) -> tuple[str, ...]:
 
 def original_voice_available(library) -> bool:
     audio, text = library.voice_reference_paths()
-    if not _valid_reference_audio(audio) or not text.is_file():
+    if not valid_reference_audio(audio) or not text.is_file():
         return False
     try:
         transcript = text.read_text(encoding="utf-8").strip()
@@ -159,53 +196,24 @@ def original_voice_available(library) -> bool:
 
 
 def default_voice_available() -> bool:
-    if not GENERATED_FALLBACK_OPUS.is_file() or GENERATED_FALLBACK_OPUS.stat().st_size < 8000:
-        return False
-    return hashlib.sha256(GENERATED_FALLBACK_OPUS.read_bytes()).hexdigest() == GENERATED_FALLBACK_SHA256
-
-
-def _decode_default_opus() -> bytes:
-    if not default_voice_available():
-        raise FileNotFoundError("verified generated fallback voice asset is missing or corrupted")
-    raw = GENERATED_FALLBACK_OPUS.read_bytes()
-    if not raw.startswith(b"OggS"):
-        raise RuntimeError("packaged generated fallback is not a valid Ogg/Opus payload")
-    return raw
+    """No identifying/generated fallback voice is distributed in source."""
+    return False
 
 
 def materialize_default_voice(cache_root: Path) -> tuple[Path, str]:
-    cache_root.mkdir(parents=True, exist_ok=True)
-    opus_path = cache_root / "accepted_c_generated_fallback.opus"
-    wav_path = cache_root / "accepted_c_generated_fallback.wav"
-    raw = _decode_default_opus()
-    cached_digest = hashlib.sha256(opus_path.read_bytes()).hexdigest() if opus_path.is_file() else None
-    if cached_digest != GENERATED_FALLBACK_SHA256:
-        shutil.copy2(GENERATED_FALLBACK_OPUS, opus_path)
-        wav_path.unlink(missing_ok=True)
-    if not _valid_reference_audio(wav_path):
-        subprocess.run(
-            [
-                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                "-i", str(opus_path), "-ac", "1", "-ar", str(REFERENCE_SAMPLE_RATE), str(wav_path),
-            ],
-            check=True,
-        )
-    if not _valid_reference_audio(wav_path):
-        raise RuntimeError("generated fallback could not be materialized as valid 24 kHz mono audio")
-    return wav_path, GENERATED_FALLBACK_TEXT
+    del cache_root
+    raise FileNotFoundError(
+        "No generated fallback voice is packaged for privacy. Configure or securely provision a local source voice."
+    )
 
 
 def resolve_voice(library, *, allow_generated_fallback: bool = False) -> tuple[Path, str, str]:
+    del allow_generated_fallback
     audio, text = library.voice_reference_paths()
     if original_voice_available(library):
         transcript = text.read_text(encoding="utf-8").strip()
         return audio, transcript, ORIGINAL_SOURCE_LABEL
-
-    if allow_generated_fallback:
-        fallback_audio, fallback_text = materialize_default_voice(library.cache_root)
-        return fallback_audio, fallback_text, GENERATED_FALLBACK_LABEL
-
     raise FileNotFoundError(
         "Original source voice is not configured locally or did not pass the local quality gate. "
-        "Add a clean 24 kHz mono source recording with its exact transcript in Settings before generating."
+        "Add a clean source recording with its exact transcript in Settings before generating."
     )
