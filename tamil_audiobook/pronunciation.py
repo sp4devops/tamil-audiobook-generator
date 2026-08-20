@@ -20,11 +20,10 @@ _DEFAULT_OVERRIDES = {
     "OmniVoice": "Omni Voice",
 }
 
-# Safe, high-confidence Romanized Tamil normalizations. The replacement is only
-# sent to the TTS model; the book text and read-along text remain unchanged.
-# This normalization is intentionally limited to all-Latin/Tanglish chunks.
-# Mixed Tamil-script chunks keep their established baseline because OmniVoice
-# already has an explicit multilingual signal there.
+# High-confidence Romanized Tamil normalizations. These replacements are only
+# sent to the TTS model; source/read-along text remains unchanged. P7 applies
+# them inside mixed-script chunks too, but only when the token is explicitly in
+# this conservative lexicon. Ordinary English words are never transliterated.
 _TANGLISH_NORMALIZATIONS = {
     "machi": "மச்சி",
     "machan": "மச்சான்",
@@ -43,9 +42,13 @@ _TANGLISH_NORMALIZATIONS = {
     "seri": "சரி",
     "sari": "சரி",
     "pannu": "பண்ணு",
+    "panna": "பண்ண",
     "pannunga": "பண்ணுங்க",
     "pannalaam": "பண்ணலாம்",
     "pannalam": "பண்ணலாம்",
+    "pannidu": "பண்ணிடு",
+    "pannitu": "பண்ணிட்டு",
+    "pannittu": "பண்ணிட்டு",
     "paathiya": "பாத்தியா",
     "semma": "செம",
     "apdi": "அப்படி",
@@ -57,18 +60,41 @@ _TANGLISH_NORMALIZATIONS = {
     "neenga": "நீங்க",
     "namma": "நம்ம",
     "inga": "இங்க",
+    "intha": "இந்த",
+    "indha": "இந்த",
     "yen": "ஏன்",
     "venum": "வேணும்",
     "venam": "வேணாம்",
     "appuram": "அப்புறம்",
     "poitu": "போய்ட்டு",
     "vandhu": "வந்து",
+    "eduthuttu": "எடுத்துட்டு",
+    "eduthitu": "எடுத்துட்டு",
+    "varen": "வரேன்",
+    "varren": "வரேன்",
+    "aaguma": "ஆகுமா",
+    "aagum": "ஆகும்",
+    "aachu": "ஆச்சு",
+    "kulla": "குள்ள",
+    "konjam": "கொஞ்சம்",
+    "mudinjutha": "முடிஞ்சுதா",
+    "mudinjuthu": "முடிஞ்சுது",
+    "nu": "னு",
+}
+
+# Single weak tokens like "da", "ama", "sari" can occur in non-Tanglish text.
+# In an all-Latin chunk we normalize only when there are multiple known tokens
+# or at least one strong conversational marker. Tamil-script context is already
+# an unambiguous signal, so known Romanized Tamil tokens are safe there.
+_STRONG_TANGLISH_TOKENS = {
+    "machi", "machan", "dei", "ennada", "irukku", "iruka", "irukkaa", "romba",
+    "pannu", "panna", "pannunga", "pannalaam", "pannalam", "pannidu", "pannitu",
+    "paathiya", "semma", "apdi", "appadi", "epdi", "eppadi", "neenga", "namma",
+    "intha", "indha", "venum", "venam", "appuram", "poitu", "vandhu", "eduthuttu",
+    "aaguma", "aachu", "mudinjutha", "mudinjuthu",
 }
 
 _TAMIL_RE = re.compile(r"[\u0B80-\u0BFF]")
-# Hyphen is intentionally excluded from the ASCII token. That lets a base term
-# still match when Tamil morphology is attached, for example API-ஐ, server-ல,
-# MongoDB-க்கு. The suffix and punctuation are preserved by the regex engine.
 _TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9.+#_]*)(?![A-Za-z0-9_])")
 
 
@@ -105,13 +131,21 @@ def override_signature(overrides: dict[str, str]) -> str:
         {
             "overrides": overrides,
             "tanglish_normalizations": _TANGLISH_NORMALIZATIONS,
-            "tanglish_policy": "latin-only-v1",
+            "tanglish_policy": "context-aware-mixed-script-v2",
         },
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _tanglish_normalization_enabled(text: str) -> bool:
+    if _TAMIL_RE.search(text):
+        return True
+    tokens = [match.group(1).casefold() for match in _TOKEN_RE.finditer(text)]
+    known = [token for token in tokens if token in _TANGLISH_NORMALIZATIONS]
+    return len(known) >= 2 or any(token in _STRONG_TANGLISH_TOKENS for token in known)
 
 
 def apply_pronunciation_overrides(text: str, overrides: dict[str, str] | None = None) -> PronunciationResult:
@@ -121,7 +155,7 @@ def apply_pronunciation_overrides(text: str, overrides: dict[str, str] | None = 
 
     folded_mapping = {key.casefold(): value for key, value in mapping.items()}
     applied: list[str] = []
-    normalize_tanglish = not bool(_TAMIL_RE.search(text))
+    normalize_tanglish = _tanglish_normalization_enabled(text)
 
     def replace(match: re.Match[str]) -> str:
         token = match.group(1)
