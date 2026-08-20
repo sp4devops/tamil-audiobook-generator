@@ -51,14 +51,18 @@ JOB_ROOT.mkdir(parents=True, exist_ok=True)
 JOB_ROOT.chmod(0o700)
 
 
-def _job_path(job_id: str) -> Path:
-    if not job_id or any(ch not in "0123456789abcdef" for ch in job_id.lower()):
+def _validate_job_id(job_id: str) -> str:
+    if not job_id or len(job_id) > 64 or any(not (ch.isalnum() or ch in "_-") for ch in job_id):
         raise FileNotFoundError(job_id)
-    return JOB_ROOT / f"{job_id}.json"
+    return job_id
+
+
+def _job_path(job_id: str) -> Path:
+    return JOB_ROOT / f"{_validate_job_id(job_id)}.json"
 
 
 def _cancel_path(job_id: str) -> Path:
-    return JOB_ROOT / f"{job_id}.cancel"
+    return JOB_ROOT / f"{_validate_job_id(job_id)}.cancel"
 
 
 def _atomic_json(path: Path, payload: dict) -> None:
@@ -80,10 +84,9 @@ def _load_job(job_id: str) -> dict:
     if memory:
         return memory
     try:
-        payload = json.loads(_job_path(job_id).read_text(encoding="utf-8"))
+        return json.loads(_job_path(job_id).read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, ValueError):
         raise FileNotFoundError(job_id)
-    return payload
 
 
 def _persist_job(job_id: str, payload: dict) -> None:
@@ -120,20 +123,27 @@ def _public_payload(payload: dict) -> dict:
 
 
 def _reconcile_job(job_id: str, payload: dict) -> dict:
+    """Reconcile only durable state whose owning process may have disappeared."""
     status = payload.get("status")
     if status in _ACTIVE_STATUSES and not GenerationLock.is_locked(library.root):
-        payload = dict(payload)
-        payload.update(
+        reconciled = dict(payload)
+        reconciled.update(
             status="interrupted",
             stage="interrupted",
             resumable=True,
             error="Generation was interrupted by a server/process restart. Completed checkpoints are safe; press Generate to resume.",
         )
-        _job_update(job_id, **payload)
+        _job_update(job_id, **{key: value for key, value in reconciled.items() if key != "job_id"})
+        reconciled["job_id"] = job_id
+        return reconciled
     return payload
 
 
 def _public_job(job_id: str) -> dict:
+    with _jobs_lock:
+        memory = dict(_jobs.get(job_id, {}))
+    if memory:
+        return _public_payload(memory)
     payload = _reconcile_job(job_id, _load_job(job_id))
     return _public_payload(payload)
 
@@ -151,8 +161,12 @@ def _persisted_jobs() -> list[tuple[str, dict]]:
 def _active_generation() -> tuple[str, dict] | None:
     with _jobs_lock:
         active = [(job_id, dict(payload)) for job_id, payload in _jobs.items() if payload.get("status") in _ACTIVE_STATUSES]
-    candidates = active or [(job_id, payload) for job_id, payload in _persisted_jobs() if payload.get("status") in _ACTIVE_STATUSES]
-    for job_id, payload in candidates:
+    if active:
+        job_id, payload = active[0]
+        return job_id, _public_payload(payload)
+    for job_id, payload in _persisted_jobs():
+        if payload.get("status") not in _ACTIVE_STATUSES:
+            continue
         reconciled = _reconcile_job(job_id, payload)
         if reconciled.get("status") in _ACTIVE_STATUSES:
             return job_id, _public_payload(reconciled)
@@ -167,8 +181,8 @@ def _active_job_for_book(book_id: str) -> tuple[str, dict] | None:
 
 
 def _ensure_generation_idle(action: str) -> None:
-    if GenerationLock.is_locked(library.root):
-        active = _active_generation()
+    active = _active_generation()
+    if active or GenerationLock.is_locked(library.root):
         title = active[1].get("title") if active else "another process"
         raise HTTPException(409, f"Cannot {action} while audiobook generation is running for {title or 'another book'}.")
 
@@ -364,9 +378,12 @@ def generate_book(book_id: str) -> dict:
     except FileNotFoundError: raise HTTPException(404, "Book not found")
     ready, source = _voice_status()
     if not ready: raise HTTPException(409, "Original source voice is required. Add the original recording and its exact transcript in Settings before generating.")
-    existing = _active_job_for_book(book_id)
     generation_mode = _generation_mode(); estimate = estimate_audiobook(book_text, generation_mode=generation_mode)
-    if existing: return {"job_id": existing[0], "status": existing[1]["status"], "estimate": estimate, "voice_source": source, "generation_mode": generation_mode, "resumed_existing_job": True}
+    active = _active_generation()
+    if active:
+        if active[1].get("book_id") == book_id:
+            return {"job_id": active[0], "status": active[1]["status"], "estimate": estimate, "voice_source": source, "generation_mode": generation_mode, "resumed_existing_job": True}
+        raise HTTPException(409, f"Another audiobook generation is already running for {active[1].get('title') or 'another book'}.")
     lease = GenerationLock(library.root)
     if not lease.try_acquire(): raise HTTPException(409, "Another synthesis process already owns this library's generation lock. ListenLeaf permits one Metal generation job at a time.")
     started = time.monotonic(); job_id = uuid.uuid4().hex[:12]
