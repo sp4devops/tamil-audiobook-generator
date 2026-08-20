@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
-from typing import Callable
 
 from . import engine as base_engine
 from .generation_controls import (
@@ -63,38 +61,25 @@ def synthesize_audiobook_with_controls(
     controls: OmniVoiceGenerationControls | None = None,
     **kwargs,
 ) -> dict:
-    """Run the production engine with validated, opt-in OmniVoice controls.
+    """Run the production engine with validated OmniVoice controls.
 
-    The accepted engine defaults are preserved when ``controls`` is omitted or
-    left at defaults. Checkpoint identity is extended with the control signature
-    so audio created with one parameter set is never silently reused for another.
+    P7 uses explicit model-loader and checkpoint-signature injection instead of
+    temporarily monkey-patching module globals. This is thread-safe and keeps
+    one generation job from leaking controls into another caller.
     """
     selected = (controls or OmniVoiceGenerationControls()).validated()
     signature = selected.cache_signature()
 
-    from mlx_audio.tts import utils as tts_utils
-
-    original_load_model: Callable = tts_utils.load_model
-    original_checkpoint_key: Callable = base_engine._checkpoint_key
+    from mlx_audio.tts.utils import load_model
 
     def controlled_load_model(*args, **load_kwargs):
-        return _ControlledModel(original_load_model(*args, **load_kwargs), selected)
+        return _ControlledModel(load_model(*args, **load_kwargs), selected)
 
-    def controlled_checkpoint_key(**key_kwargs):
-        original = original_checkpoint_key(**key_kwargs)
-        digest = hashlib.sha256()
-        digest.update(original.encode("ascii"))
-        digest.update(b"\0")
-        digest.update(f"controls-v{OMNIVOICE_CONTROLS_VERSION}|{signature}".encode("utf-8"))
-        return digest.hexdigest()
-
-    tts_utils.load_model = controlled_load_model
-    base_engine._checkpoint_key = controlled_checkpoint_key
-    try:
-        report = base_engine.synthesize_audiobook(**kwargs)
-    finally:
-        base_engine._checkpoint_key = original_checkpoint_key
-        tts_utils.load_model = original_load_model
+    report = base_engine.synthesize_audiobook(
+        **kwargs,
+        model_loader=controlled_load_model,
+        checkpoint_salt=f"controls-v{OMNIVOICE_CONTROLS_VERSION}|{signature}",
+    )
 
     report["omnivoice_controls_version"] = OMNIVOICE_CONTROLS_VERSION
     report["omnivoice_controls"] = selected.as_dict()
