@@ -1,0 +1,155 @@
+name: p7-context-native-delivery
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'tamil_audiobook/engine.py'
+      - 'tamil_audiobook/controlled_engine.py'
+      - 'tamil_audiobook/pronunciation.py'
+      - 'tamil_audiobook/prosody.py'
+      - 'tamil_audiobook/speech.py'
+      - 'tamil_audiobook/voice.py'
+      - 'scripts/voice_quality_benchmark.py'
+      - 'benchmarks/tamil_voice_quality.json'
+      - 'tests/test_p7_context_native_delivery.py'
+      - '.github/workflows/p7-context-native-delivery.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tamil_audiobook/engine.py'
+      - 'tamil_audiobook/controlled_engine.py'
+      - 'tamil_audiobook/pronunciation.py'
+      - 'tamil_audiobook/prosody.py'
+      - 'tamil_audiobook/speech.py'
+      - 'tamil_audiobook/voice.py'
+      - 'scripts/voice_quality_benchmark.py'
+      - 'benchmarks/tamil_voice_quality.json'
+      - '.github/workflows/p7-context-native-delivery.yml'
+
+concurrency:
+  group: p7-context-native-delivery-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  unit-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install lightweight test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy soundfile pytest
+      - name: Run P7 contracts
+        run: pytest -q tests/test_p7_context_native_delivery.py tests/test_engine.py tests/test_p5_native_performance.py
+
+  listening-pack:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Verify Apple Silicon runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(arch)" = 'arm64'
+      - name: Install runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+          python -m pip install --upgrade pip
+          pip install -r stage2_requirements.txt
+      - name: Download accepted Stage 1 reference transiently
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/private outputs/p7-context-native-delivery
+          gh run download 31974866774 \
+            --repo sp4devops/tamil-voice-clone \
+            --name voice-001-stage1-apple-silicon-listening-samples \
+            --dir data/private/stage1_accepted
+          test -s data/private/stage1_accepted/english_listening_sample.wav
+          printf '%s' 'This is my natural English voice, speaking clearly and smoothly.' \
+            > data/private/stage1_accepted/english_reference.txt
+      - name: Generate P7 context and negative-control samples
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/time -l python scripts/voice_quality_benchmark.py \
+            --reference data/private/stage1_accepted/english_listening_sample.wav \
+            --reference-text-file data/private/stage1_accepted/english_reference.txt \
+            --output-dir outputs/p7-context-native-delivery \
+            --case chennai-01 \
+            --case chennai-02 \
+            --case tanglish-01 \
+            --case tanglish-02 \
+            --case codeswitch-01 \
+            --case codeswitch-02 \
+            --case dialogue-02 \
+            --case english-01 \
+            --case english-02 \
+            2> >(tee outputs/p7-context-native-delivery/resource_usage.txt >&2)
+      - name: Validate context-aware accent routing
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('outputs/p7-context-native-delivery')
+          dialogue = json.loads((root / 'dialogue-02' / 'report.json').read_text(encoding='utf-8'))
+          english1 = json.loads((root / 'english-01' / 'report.json').read_text(encoding='utf-8'))
+          english2 = json.loads((root / 'english-02' / 'report.json').read_text(encoding='utf-8'))
+          if dialogue.get('contextual_indian_english_chunks', 0) < 1:
+              raise SystemExit('P7 failed: bilingual dialogue did not route standalone English through contextual Indian-English prosody')
+          if english1.get('contextual_indian_english_chunks', 0) != 0 or english2.get('contextual_indian_english_chunks', 0) != 0:
+              raise SystemExit('P7 failed: English-only negative control was incorrectly forced into bilingual context')
+          for report_path in root.glob('*/report.json'):
+              report = json.loads(report_path.read_text(encoding='utf-8'))
+              if report.get('prosody_version', 0) < 4:
+                  raise SystemExit(f'P7 failed: stale prosody in {report_path}')
+              if report.get('audio_seconds', 0) <= 0:
+                  raise SystemExit(f'P7 failed: empty audio in {report_path}')
+          print('p7_context_native_delivery=READY_FOR_USER_LISTENING')
+          PY
+      - name: Remove transient material
+        if: always()
+        shell: bash
+        run: |
+          rm -rf data/private
+          rm -f outputs/p7-context-native-delivery/resource_usage.txt
+      - name: Upload P7 listening pack
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p7-context-native-delivery-listening-pack
+          path: |
+            outputs/p7-context-native-delivery/manifest.json
+            outputs/p7-context-native-delivery/*/sample.wav
+            outputs/p7-context-native-delivery/*/sample.mp3
+            outputs/p7-context-native-delivery/*/report.json
+          if-no-files-found: error
+          retention-days: 7
