@@ -12,7 +12,7 @@ from tamil_audiobook.voice import audit_reference_audio, reference_text_warnings
 
 
 def test_p7_prosody_version_is_bumped():
-    assert PROSODY_VERSION >= 4
+    assert PROSODY_VERSION >= 5
 
 
 def test_pure_english_between_tamil_chunks_keeps_indian_english_accent():
@@ -25,12 +25,15 @@ def test_pure_english_between_tamil_chunks_keeps_indian_english_accent():
     assert profile.name == "indian-english-question"
     assert "South-Indian Tamil bilingual speaker" in profile.instruct
     assert "American or British accent" in profile.instruct
+    assert "Match the surrounding Tamil speaking rate" in profile.instruct
+    assert "Do not speed up, clip, or compress" in profile.instruct
 
 
 def test_english_only_book_keeps_existing_english_baseline():
     profile = prosody_for_chunk("Did the backup finish?", "question")
     assert profile.name == "question"
     assert "South-Indian Tamil bilingual speaker" not in profile.instruct
+    assert "Match the surrounding Tamil speaking rate" not in profile.instruct
 
 
 def test_context_works_when_tamil_is_only_on_next_chunk():
@@ -40,6 +43,26 @@ def test_context_works_when_tamil_is_only_on_next_chunk():
         next_text="ஆனா data safe-ஆ இருக்கு.",
     )
     assert profile.name == "indian-english-continuation"
+    assert "Match the surrounding Tamil speaking rate" in profile.instruct
+
+
+def test_mixed_tamil_english_chunk_preserves_tamil_rate_for_english_words():
+    profile = prosody_for_chunk(
+        "மச்சி, அந்த server மறுபடியும் down ஆயிடுச்சு டா; log பாத்தா timeout தான் அடிக்குது.",
+        "sentence",
+    )
+    assert profile.name == "mixed-conversational"
+    assert "Match the surrounding Tamil speaking rate" in profile.instruct
+    assert "embedded English words" in profile.instruct
+
+
+def test_colloquial_tamil_profile_protects_english_loanword_pacing():
+    profile = prosody_for_chunk(
+        "சரி விடு, நாளைக்கு காலையிலேயே கிளம்பலாம்; அப்போ டிராஃபிக் கொஞ்சம் கம்மியா இருக்கும்.",
+        "sentence",
+    )
+    assert profile.name == "tamil-conversational"
+    assert "Tamil-script English loanwords" in profile.instruct
 
 
 def test_mixed_script_normalizes_only_known_romanized_tamil_tokens():
