@@ -4,7 +4,7 @@ import inspect
 import json
 from pathlib import Path
 
-from tamil_audiobook import engine
+from tamil_audiobook import controlled_engine, engine
 
 
 def test_model_is_immutably_pinned_and_cache_records_revision(tmp_path: Path):
@@ -19,7 +19,15 @@ def test_model_is_immutably_pinned_and_cache_records_revision(tmp_path: Path):
     assert manifest["model_revision"] == engine.MODEL_REVISION
 
     source = inspect.getsource(engine.synthesize_audiobook)
-    assert "load_model(MODEL_ID, revision=MODEL_REVISION)" in source
+    assert "model_loader(MODEL_ID, revision=MODEL_REVISION)" in source
+
+
+def test_controlled_engine_uses_explicit_injection_not_global_monkey_patch():
+    source = inspect.getsource(controlled_engine.synthesize_audiobook_with_controls)
+    assert "model_loader=controlled_load_model" in source
+    assert "checkpoint_salt=" in source
+    assert "tts_utils.load_model =" not in source
+    assert "base_engine._checkpoint_key =" not in source
 
 
 def test_report_semantics_do_not_claim_listening_quality_pass():
