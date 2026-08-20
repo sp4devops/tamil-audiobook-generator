@@ -20,14 +20,14 @@ def test_boundary_pause_policy_preserves_punctuation_rhythm():
     assert boundary_pause_ms("paragraph") > boundary_pause_ms("question")
 
 
-def test_pronunciation_overrides_only_change_model_facing_tokens():
+def test_pronunciation_overrides_change_only_model_facing_tokens_including_safe_mixed_tanglish():
     source = "டேய் MongoDB API crash ஆயிடுச்சு, seri machi."
     result = apply_pronunciation_overrides(source, load_overrides())
     assert "டேய்" in result.text
-    assert "seri machi" in result.text
+    assert "சரி மச்சி" in result.text
     assert "Mongo D B" in result.text
     assert "A P I" in result.text
-    assert result.applied == ("MongoDB", "API")
+    assert result.applied == ("MongoDB", "API", "seri", "machi")
 
 
 def test_user_pronunciation_json_extends_builtin_overrides(tmp_path):

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-PROSODY_VERSION = 3
+PROSODY_VERSION = 5
 
 _LIST_RE = re.compile(r"^(?:[-*•]\s+|\d{1,3}[.)]\s+)")
 _HEADING_RE = re.compile(
@@ -15,9 +15,6 @@ _TAMIL_RE = re.compile(r"[\u0B80-\u0BFF]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
 _LATIN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
 
-# High-signal conversational markers only. These are deliberately conservative:
-# they should trigger a natural spoken delivery without turning formal prose into
-# exaggerated acting.
 _TAMIL_CONVERSATIONAL = (
     "மச்சி", "மச்சான்", "டா", "டி", "டேய்", "என்னடா", "என்னங்க", "ஆமா",
     "இல்ல", "இருக்கு", "இருக்கா", "பண்ணு", "பண்ணுங்க", "பண்ணலாம்", "பண்ணலாமா",
@@ -26,7 +23,8 @@ _TAMIL_CONVERSATIONAL = (
 _TANGLISH_CONVERSATIONAL = {
     "machi", "machan", "da", "dei", "enna", "ennada", "aama", "ama", "illa",
     "irukku", "iruka", "romba", "seri", "sari", "pannu", "pannunga", "pannalaam",
-    "paathiya", "semma", "appadi", "apdi", "epdi", "eppadi", "venum", "venam",
+    "panna", "pannidu", "pannitu", "paathiya", "semma", "appadi", "apdi", "epdi",
+    "eppadi", "venum", "venam", "intha", "indha", "aaguma", "eduthuttu", "varen",
 }
 
 
@@ -38,14 +36,23 @@ class ProsodyProfile:
 
 _NEUTRAL = ProsodyProfile("neutral", "None")
 
-# P6 principle: English embedded inside Tamil/Tanglish must stay inside the same
-# South-Indian bilingual performance. English remains clear and recognisable,
-# but must not trigger a US/UK accent reset or a separate English-speaking voice.
+_PACE_CONTINUITY = (
+    "Match the surrounding Tamil speaking rate. "
+    "Do not speed up, clip, or compress embedded English words or Tamil-script English loanwords; "
+    "give them the same relaxed syllabic timing as the surrounding Tamil."
+)
 _INDIAN_CODE_SWITCH = (
     "Keep one South-Indian Tamil bilingual speaker throughout. "
     "Pronounce embedded English words in natural South-Indian English, with everyday Indian-English stress and rhythm. "
     "Do not switch into an American or British accent at English words, and do not over-Tamilize technical English. "
-    "Keep English words clear while preserving the surrounding Tamil phrase rhythm and the same speaker identity."
+    "Keep English words clear while preserving the surrounding Tamil phrase rhythm and the same speaker identity. "
+    + _PACE_CONTINUITY
+)
+_INDIAN_ENGLISH_CONTINUATION = (
+    "Continue as the same South-Indian Tamil bilingual speaker from the surrounding passage. "
+    "Speak this English in natural everyday South-Indian English with Indian-English stress and rhythm. "
+    "Do not reset into an American or British accent, do not imitate a separate English narrator, and keep the same timbre and conversational energy. "
+    + _PACE_CONTINUITY
 )
 
 _PROFILES = {
@@ -71,7 +78,8 @@ _PROFILES = {
     ),
     "tamil-conversational": ProsodyProfile(
         "tamil-conversational",
-        "Natural everyday spoken Tamil; warm, lively and locally conversational, with smooth phrase flow and colloquial rhythm; avoid formal newsreader cadence and avoid exaggerated acting; keep the same speaker identity.",
+        "Natural everyday spoken Tamil; warm, lively and locally conversational, with smooth phrase flow and colloquial rhythm; avoid formal newsreader cadence and avoid exaggerated acting; keep the same speaker identity. "
+        + _PACE_CONTINUITY,
     ),
     "tanglish-conversational": ProsodyProfile(
         "tanglish-conversational",
@@ -93,6 +101,22 @@ _PROFILES = {
         "mixed-exclamation",
         "Lively but controlled Tamil-English exclamation; preserve the Tamil conversational cadence and do not shout. " + _INDIAN_CODE_SWITCH,
     ),
+    "indian-english-continuation": ProsodyProfile(
+        "indian-english-continuation",
+        _INDIAN_ENGLISH_CONTINUATION,
+    ),
+    "indian-english-dialogue": ProsodyProfile(
+        "indian-english-dialogue",
+        "Natural conversational dialogue with restrained expression. " + _INDIAN_ENGLISH_CONTINUATION,
+    ),
+    "indian-english-question": ProsodyProfile(
+        "indian-english-question",
+        "Use natural questioning intonation and clear contrast without overacting. " + _INDIAN_ENGLISH_CONTINUATION,
+    ),
+    "indian-english-exclamation": ProsodyProfile(
+        "indian-english-exclamation",
+        "Use lively but controlled emphasis without shouting. " + _INDIAN_ENGLISH_CONTINUATION,
+    ),
 }
 
 
@@ -107,14 +131,22 @@ def _contains_tanglish_marker(text: str) -> bool:
 
 
 def _code_switch_delivery(text: str) -> bool:
-    """Return True when English must stay inside a Tamil/Tanglish accent frame."""
     has_tamil = bool(_TAMIL_RE.search(text))
     has_latin = bool(_LATIN_RE.search(text))
     if has_tamil and has_latin:
         return True
-    # Romanized Tanglish is all Latin, so high-signal Tamil conversational words
-    # are the conservative cue that this is not ordinary English narration.
     return not has_tamil and has_latin and _contains_tanglish_marker(text)
+
+
+def _tamil_bilingual_frame(text: str) -> bool:
+    """Return True when text establishes a Tamil/Tanglish speaking frame."""
+    if not text:
+        return False
+    return bool(_TAMIL_RE.search(text)) or _contains_tanglish_marker(text)
+
+
+def _pure_english(text: str) -> bool:
+    return bool(_LATIN_RE.search(text)) and not bool(_TAMIL_RE.search(text)) and not _contains_tanglish_marker(text)
 
 
 def _conversational_profile(text: str) -> ProsodyProfile | None:
@@ -132,33 +164,56 @@ def _conversational_profile(text: str) -> ProsodyProfile | None:
     return None
 
 
-def prosody_for_chunk(text: str, boundary: str) -> ProsodyProfile:
+def prosody_for_chunk(
+    text: str,
+    boundary: str,
+    *,
+    previous_text: str = "",
+    next_text: str = "",
+) -> ProsodyProfile:
     """Return a conservative OmniVoice instruction for the current speech unit.
 
-    P6 keeps pure Tamil and pure English on the established P5 behavior while
-    constraining mixed Tamil-English/Tanglish delivery to one South-Indian
-    bilingual accent frame. This prevents expressive boundaries such as dialogue,
-    questions and exclamations from accidentally restoring a US/UK English accent.
+    P7 preserves P6 behavior inside mixed chunks and additionally carries the
+    South-Indian bilingual accent frame across chunk boundaries. A pure-English
+    chunk is constrained only when an adjacent chunk establishes Tamil/Tanglish
+    context; English-only books therefore keep the established English baseline.
     """
     stripped = str(text or "").strip()
     if not stripped:
         return _NEUTRAL
-    if _HEADING_RE.match(stripped) and len(stripped.split()) <= 12:
-        return _PROFILES["heading"]
-    if _LIST_RE.match(stripped):
-        return _PROFILES["list"]
 
     code_switch = _code_switch_delivery(stripped)
-    if _DIALOGUE_RE.match(stripped):
-        return _PROFILES["mixed-dialogue"] if code_switch else _PROFILES["dialogue"]
+    contextual_english = _pure_english(stripped) and (
+        _tamil_bilingual_frame(previous_text) or _tamil_bilingual_frame(next_text)
+    )
 
-    # Explicit punctuation intent remains authoritative, but P6 uses dedicated
-    # mixed-language variants so question/exclamation prosody cannot reset accent.
+    if _HEADING_RE.match(stripped) and len(stripped.split()) <= 12 and not contextual_english:
+        return _PROFILES["heading"]
+    if _LIST_RE.match(stripped) and not contextual_english:
+        return _PROFILES["list"]
+    if _DIALOGUE_RE.match(stripped):
+        if code_switch:
+            return _PROFILES["mixed-dialogue"]
+        if contextual_english:
+            return _PROFILES["indian-english-dialogue"]
+        return _PROFILES["dialogue"]
+
     normalized_boundary = str(boundary or "continuation")
     if normalized_boundary == "question":
-        return _PROFILES["mixed-question"] if code_switch else _PROFILES["question"]
+        if code_switch:
+            return _PROFILES["mixed-question"]
+        if contextual_english:
+            return _PROFILES["indian-english-question"]
+        return _PROFILES["question"]
     if normalized_boundary == "exclamation":
-        return _PROFILES["mixed-exclamation"] if code_switch else _PROFILES["exclamation"]
+        if code_switch:
+            return _PROFILES["mixed-exclamation"]
+        if contextual_english:
+            return _PROFILES["indian-english-exclamation"]
+        return _PROFILES["exclamation"]
+
+    if contextual_english:
+        return _PROFILES["indian-english-continuation"]
 
     conversational = _conversational_profile(stripped)
     if conversational is not None:

@@ -3,13 +3,14 @@ from __future__ import annotations
 import hashlib
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import soundfile as sf
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 DEFAULT_VOICE_ROOT = PACKAGE_ROOT / "default_voice"
-# This generated reference is retained only as an explicit emergency/test fallback.
 GENERATED_FALLBACK_OPUS = DEFAULT_VOICE_ROOT / "final_11min_accepted_c.opus"
 GENERATED_FALLBACK_SHA256 = "51afd8c66adfac4906f36080e327331bfc2b16638a95f605452f1f1c2b162802"
 GENERATED_FALLBACK_PROVENANCE = "8.52-second bilingual excerpt extracted from the Final 11-minute accepted-C audiobook MP3"
@@ -22,16 +23,38 @@ REFERENCE_SAMPLE_RATE = 24000
 REFERENCE_CHANNELS = 1
 MIN_REFERENCE_SECONDS = 1.0
 MAX_REFERENCE_SECONDS = 120.0
+PREFERRED_REFERENCE_SECONDS = (6.0, 30.0)
 
-# Backward-compatible constant names for tooling/tests that inspect the packaged fallback.
 DEFAULT_VOICE_OPUS = GENERATED_FALLBACK_OPUS
 DEFAULT_VOICE_SHA256 = GENERATED_FALLBACK_SHA256
 DEFAULT_VOICE_PROVENANCE = GENERATED_FALLBACK_PROVENANCE
 DEFAULT_VOICE_TEXT = GENERATED_FALLBACK_TEXT
 
 
+@dataclass(frozen=True)
+class ReferenceQualityReport:
+    accepted: bool
+    duration_seconds: float
+    peak: float
+    rms_db: float | None
+    active_ratio: float
+    clipping_ratio: float
+    warnings: tuple[str, ...]
+
+    def as_dict(self) -> dict:
+        return {
+            "accepted": self.accepted,
+            "duration_seconds": round(self.duration_seconds, 3),
+            "peak": round(self.peak, 5),
+            "rms_db": round(self.rms_db, 2) if self.rms_db is not None else None,
+            "active_ratio": round(self.active_ratio, 4),
+            "clipping_ratio": round(self.clipping_ratio, 6),
+            "warnings": list(self.warnings),
+        }
+
+
 def _valid_reference_audio(path: Path) -> bool:
-    """Validate the normalized source reference used by the synthesis model."""
+    """Validate the normalized source reference container and duration."""
     try:
         if not path.is_file() or path.stat().st_size < 1000:
             return False
@@ -46,22 +69,96 @@ def _valid_reference_audio(path: Path) -> bool:
         return False
 
 
+def audit_reference_audio(path: Path) -> ReferenceQualityReport:
+    """Run a lightweight local quality gate for clone-reference audio.
+
+    This intentionally avoids ASR/cloud dependencies. It catches references that
+    are structurally valid but useless for cloning: silence, almost-no-speech,
+    severe clipping, and extreme level/duration. Soft issues remain warnings so a
+    user can still choose an unusual but valid recording.
+    """
+    if not _valid_reference_audio(path):
+        return ReferenceQualityReport(
+            False,
+            0.0,
+            0.0,
+            None,
+            0.0,
+            0.0,
+            ("invalid_format_or_duration",),
+        )
+    try:
+        audio, rate = sf.read(path, dtype="float32", always_2d=False)
+    except (OSError, RuntimeError, ValueError):
+        return ReferenceQualityReport(False, 0.0, 0.0, None, 0.0, 0.0, ("unreadable_audio",))
+
+    samples = np.asarray(audio, dtype=np.float32).reshape(-1)
+    duration = len(samples) / float(rate)
+    absolute = np.abs(samples)
+    peak = float(np.max(absolute)) if len(samples) else 0.0
+    rms = float(np.sqrt(np.mean(np.square(samples, dtype=np.float64)))) if len(samples) else 0.0
+    rms_db = float(20.0 * np.log10(rms)) if rms > 1e-8 else None
+    active_threshold = max(0.004, peak * 0.025)
+    active_ratio = float(np.mean(absolute >= active_threshold)) if len(samples) else 0.0
+    clipping_ratio = float(np.mean(absolute >= 0.995)) if len(samples) else 0.0
+
+    warnings: list[str] = []
+    hard_fail = False
+    if peak < 0.01 or rms < 0.002:
+        warnings.append("reference_is_silent_or_too_quiet")
+        hard_fail = True
+    if active_ratio < 0.12:
+        warnings.append("too_little_voiced_audio")
+        hard_fail = True
+    if clipping_ratio > 0.01:
+        warnings.append("severe_clipping")
+        hard_fail = True
+    elif clipping_ratio > 0.001:
+        warnings.append("some_clipping_detected")
+    if duration < PREFERRED_REFERENCE_SECONDS[0]:
+        warnings.append("reference_shorter_than_preferred_6s")
+    elif duration > PREFERRED_REFERENCE_SECONDS[1]:
+        warnings.append("reference_longer_than_preferred_30s")
+    if rms_db is not None and rms_db < -32.0:
+        warnings.append("reference_level_is_low")
+    if rms_db is not None and rms_db > -5.0:
+        warnings.append("reference_level_is_hot")
+
+    return ReferenceQualityReport(
+        accepted=not hard_fail,
+        duration_seconds=duration,
+        peak=peak,
+        rms_db=rms_db,
+        active_ratio=active_ratio,
+        clipping_ratio=clipping_ratio,
+        warnings=tuple(warnings),
+    )
+
+
+def reference_text_warnings(transcript: str) -> tuple[str, ...]:
+    text = str(transcript or "").strip()
+    warnings: list[str] = []
+    if len(text.split()) < 4:
+        warnings.append("reference_transcript_is_very_short")
+    has_tamil = any("\u0B80" <= ch <= "\u0BFF" for ch in text)
+    has_latin = any(ch.isascii() and ch.isalpha() for ch in text)
+    if not (has_tamil and has_latin):
+        warnings.append("bilingual_reference_coverage_missing")
+    return tuple(warnings)
+
+
 def original_voice_available(library) -> bool:
     audio, text = library.voice_reference_paths()
     if not _valid_reference_audio(audio) or not text.is_file():
         return False
     try:
-        return bool(text.read_text(encoding="utf-8").strip())
+        transcript = text.read_text(encoding="utf-8").strip()
     except OSError:
         return False
+    return bool(transcript) and audit_reference_audio(audio).accepted
 
 
 def default_voice_available() -> bool:
-    """Return whether the packaged generated fallback is intact.
-
-    Kept for backward compatibility. This is no longer the product's canonical
-    default voice and is never selected silently by resolve_voice().
-    """
     if not GENERATED_FALLBACK_OPUS.is_file() or GENERATED_FALLBACK_OPUS.stat().st_size < 8000:
         return False
     return hashlib.sha256(GENERATED_FALLBACK_OPUS.read_bytes()).hexdigest() == GENERATED_FALLBACK_SHA256
@@ -77,7 +174,6 @@ def _decode_default_opus() -> bytes:
 
 
 def materialize_default_voice(cache_root: Path) -> tuple[Path, str]:
-    """Materialize the generated accepted-C fallback for tests/emergency use only."""
     cache_root.mkdir(parents=True, exist_ok=True)
     opus_path = cache_root / "accepted_c_generated_fallback.opus"
     wav_path = cache_root / "accepted_c_generated_fallback.wav"
@@ -100,12 +196,6 @@ def materialize_default_voice(cache_root: Path) -> tuple[Path, str]:
 
 
 def resolve_voice(library, *, allow_generated_fallback: bool = False) -> tuple[Path, str, str]:
-    """Resolve the voice used for synthesis.
-
-    Product default is the user's original source recording stored locally.
-    The generated accepted-C reference is available only when a caller opts in
-    explicitly; it is never used silently by the web app or normal CLI flow.
-    """
     audio, text = library.voice_reference_paths()
     if original_voice_available(library):
         transcript = text.read_text(encoding="utf-8").strip()
@@ -116,5 +206,6 @@ def resolve_voice(library, *, allow_generated_fallback: bool = False) -> tuple[P
         return fallback_audio, fallback_text, GENERATED_FALLBACK_LABEL
 
     raise FileNotFoundError(
-        "Original source voice is not configured locally. Add a valid 24 kHz mono source recording and its exact transcript in Settings before generating."
+        "Original source voice is not configured locally or did not pass the local quality gate. "
+        "Add a clean 24 kHz mono source recording with its exact transcript in Settings before generating."
     )
