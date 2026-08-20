@@ -63,7 +63,8 @@ def test_different_book_generation_is_rejected_when_metal_slot_busy(tmp_path: Pa
     with pytest.raises(HTTPException) as exc:
         appmod.generate_book(book["id"])
     assert exc.value.status_code == 409
-    assert "one Metal synthesis job" in str(exc.value.detail)
+    assert "Another audiobook generation is already running" in str(exc.value.detail)
+    assert "Other Book" in str(exc.value.detail)
 
 
 def test_destructive_operations_are_blocked_for_generating_book(tmp_path: Path):
