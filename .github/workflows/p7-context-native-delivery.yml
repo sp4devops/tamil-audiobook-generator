@@ -54,7 +54,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install numpy soundfile pytest
       - name: Run P7 contracts
-        run: pytest -q tests/test_p7_context_native_delivery.py tests/test_engine.py tests/test_p5_native_performance.py
+        run: python -m pytest -q tests/test_p7_context_native_delivery.py tests/test_engine.py tests/test_p5_native_performance.py
 
   listening-pack:
     runs-on: macos-14
