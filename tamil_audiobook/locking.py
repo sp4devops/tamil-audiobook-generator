@@ -6,6 +6,10 @@ import threading
 from pathlib import Path
 
 
+class LockBusyError(RuntimeError):
+    """Raised when a requested non-blocking advisory lock is already owned."""
+
+
 class InterProcessRLock:
     """Thread-reentrant lock that also serializes cooperating processes.
 
@@ -17,26 +21,35 @@ class InterProcessRLock:
     A LocalLibrary passes ``<root>/.library.lock`` as its logical lock path.
     The physical lock is stored as a sibling of ``root`` so deleting/resetting
     the library directory cannot replace the inode while another process is
-    still holding the lock.
+    still holding the lock. Generation uses the same design with a distinct
+    ``.generation.lock`` path and non-blocking acquisition.
     """
 
     def __init__(self, path: Path):
         requested = Path(path)
-        if requested.name == ".library.lock":
-            requested = requested.parent.parent / f".{requested.parent.name}.lock"
+        if requested.name in {".library.lock", ".generation.lock"}:
+            kind = requested.name.strip(".")
+            requested = requested.parent.parent / f".{requested.parent.name}.{kind}"
         self.path = requested
         self._thread_lock = threading.RLock()
         self._local = threading.local()
 
-    def acquire(self) -> bool:
-        self._thread_lock.acquire()
+    def acquire(self, *, blocking: bool = True) -> bool:
+        thread_acquired = self._thread_lock.acquire(blocking=blocking)
+        if not thread_acquired:
+            return False
         depth = getattr(self._local, "depth", 0)
         if depth == 0:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
             try:
                 os.fchmod(fd, 0o600)
-                fcntl.flock(fd, fcntl.LOCK_EX)
+                operation = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+                fcntl.flock(fd, operation)
+            except BlockingIOError:
+                os.close(fd)
+                self._thread_lock.release()
+                return False
             except Exception:
                 os.close(fd)
                 self._thread_lock.release()
@@ -44,6 +57,10 @@ class InterProcessRLock:
             self._local.fd = fd
         self._local.depth = depth + 1
         return True
+
+    def acquire_or_raise(self, message: str) -> None:
+        if not self.acquire(blocking=False):
+            raise LockBusyError(message)
 
     def release(self) -> None:
         depth = getattr(self._local, "depth", 0)
@@ -68,3 +85,13 @@ class InterProcessRLock:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.release()
+
+
+class GenerationLock(InterProcessRLock):
+    """Single-owner synthesis lock shared by web and CLI for one library root."""
+
+    def __init__(self, library_root: Path):
+        super().__init__(Path(library_root) / ".generation.lock")
+
+    def try_acquire(self) -> bool:
+        return self.acquire(blocking=False)
