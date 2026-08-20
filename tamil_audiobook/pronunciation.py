@@ -95,7 +95,11 @@ _STRONG_TANGLISH_TOKENS = {
 }
 
 _TAMIL_RE = re.compile(r"[\u0B80-\u0BFF]")
-_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9.+#_]*)(?![A-Za-z0-9_])")
+# Keep internal technical dots (Node.js, v1.2.3) while excluding trailing
+# sentence punctuation so tokens such as "machi." still hit the Tanglish map.
+_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_])([A-Za-z](?:[A-Za-z0-9+#_]*[A-Za-z0-9+#_])?(?:\.[A-Za-z0-9+#_]+)*)(?![A-Za-z0-9_])"
+)
 
 
 @dataclass(frozen=True)
